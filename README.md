@@ -161,6 +161,22 @@ print(evaluate(user_ids, labels, scores))   # scores 可以来自任何模型
 > 且它的损失优化的是 counterfactual watch time、评测标签是自己重建的 `long_view2`。
 > 它是一篇时长纠偏论文的研究代码，可以当**进阶参考**，不建议作为起步点。
 
+## 自主研究循环（改编自 autoresearch-win-rtx）
+
+`program.md` 把 [autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx)
+（karpathy/autoresearch 的 Windows/消费级 GPU fork，让 agent 在固定 5 分钟 GPU 时间预算内
+自主迭代 nanochat 的 `train.py`，以 `val_bpb` 为准绳，git 分支 + `results.tsv` 记录每次
+keep/discard）改编到了这个仓库：agent 编辑的对象换成 `baseline.py`/`data.py`，准绳换成
+`evaluate.py` 算出的 `valid` primary（GAUC 与 nDCG@5 均值，越高越好），`test` 只用来汇报、
+不参与调参决策。跑一轮 FM baseline 在 CPU 上只要 ~40 秒，比原仓库 GPU 上的 5 分钟预算快得多，
+所以循环预算按 5 分钟/次的上限给了很大余量。
+
+把 `program.md` 交给一个 agent（比如把它整段贴给 Claude Code，或者 `/loop` 一个引用它的
+prompt）即可启动：agent 会开一个 `autoresearch/<tag>` 分支，反复「改代码 → 跑
+`baseline.py` → 读 `valid` primary → 达标 keep / 否则 discard」，把每一轮记到
+`results.tsv` 里，直到人工打断为止。起步方向见上面「从哪里开始改」——`program.md` 里也
+重复了一遍这份清单，避免 agent 重新踩已经踩过的坑（加静态特征、加 FM 容量）。
+
 ## 文件
 
 | | |
@@ -171,3 +187,4 @@ print(evaluate(user_ids, labels, scores))   # scores 可以来自任何模型
 | `baseline_scores.json` | 官方发布的分数 + 种子方差 + 收敛参数。 |
 | `submit.py` | 生成 / 校验提交文件。 |
 | `ablation_features.py` | 特征消融实验，可复现「加特征没有收益」那组数字。 |
+| `program.md` | 自主研究循环的 agent 指令（改编自 autoresearch-win-rtx），配合 `/loop` 或长会话 agent 使用。 |
