@@ -1,0 +1,6 @@
+KuaiRand-Pure/
+KuaiRand-Pure.tar.gz
+run.log
+submission*.csv
+__pycache__/
+*.pyc
