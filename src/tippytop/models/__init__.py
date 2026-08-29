@@ -27,6 +27,14 @@ def build(name: str, **kwargs) -> Model:
 
 # Import model modules so their @register decorators populate MODELS.
 # (Placed after register/build are defined to avoid a circular import.)
-from . import fm, popularity, random_model, fm_rank, ensemble  # noqa: E402,F401
+from . import (fm, popularity, random_model, fm_rank, ensemble, ffm,  # noqa: E402,F401
+               fm_multitask)
+
+# Optional: needs the [models] extra (LightGBM). Registered only if importable,
+# so the numpy-only path keeps working with no install.
+try:  # pragma: no cover - depends on optional extra
+    from . import lgbm_rank  # noqa: E402,F401
+except ImportError:
+    pass
 
 __all__ = ["Model", "MODELS", "register", "build"]

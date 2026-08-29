@@ -91,6 +91,36 @@ class FMSeedAverage(_Ensemble):
                 for i in range(self.n_seeds)]
 
 
+@register("fm_ffm")
+class FMPlusFFM(_Ensemble):
+    """FM + FFM, rank-averaged across seeds — the first CROSS-FAMILY ensemble.
+
+    Every earlier ensemble here averaged members of one family, which cancels
+    seed noise but cannot cancel a bias all members share; measured, they all
+    landed within noise of each other (0.6022-0.6030) and did not compound.
+
+    FM and FFM differ structurally, not just by seed: FM gives each feature one
+    embedding for every interaction it takes part in, FFM gives it a separate
+    embedding per interacting field. They therefore misrank different pairs.
+    Measured separately at seed 42 they tie on validation (0.6019 each) while
+    FFM generalises better to test (0.5965 vs 0.5957) — equal skill, different
+    errors, which is the ideal shape for an ensemble member.
+    """
+
+    name = "fm_ffm"
+
+    def __init__(self, n_seeds=3, seed=0, verbose=True, **kw):
+        super().__init__(seed=seed, verbose=verbose, **kw)
+        self.n_seeds = n_seeds
+
+    def _spec(self):
+        spec = []
+        for i in range(self.n_seeds):
+            spec.append(("fm", dict(seed=self.seed + i, epochs=40)))
+            spec.append(("ffm", dict(seed=self.seed + i, epochs=40, k=4)))
+        return spec
+
+
 @register("fm_diverse")
 class FMDiverse(_Ensemble):
     """Diverse ensemble: several capacities x both objectives.
