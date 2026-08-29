@@ -4,3 +4,10 @@ run.log
 submission*.csv
 __pycache__/
 *.pyc
+.env
+autoresearch_lg_graph.mmd
+results_dashboard.html
+.langgraph_api/
+.venv/
+*.egg-info/
+runs/

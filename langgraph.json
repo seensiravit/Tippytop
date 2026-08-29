@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "autoresearch": "autoresearch_lg.graph:graph"
+  },
+  "env": ".env"
+}

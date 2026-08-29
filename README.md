@@ -177,6 +177,176 @@ prompt）即可启动：agent 会开一个 `autoresearch/<tag>` 分支，反复�
 `results.tsv` 里，直到人工打断为止。起步方向见上面「从哪里开始改」——`program.md` 里也
 重复了一遍这份清单，避免 agent 重新踩已经踩过的坑（加静态特征、加 FM 容量）。
 
+### LangGraph harness（`autoresearch_lg/`）
+
+同一个循环的**代码版**：`program.md` 是喂给 Claude Code 的一段 prompt，
+`autoresearch_lg/` 是一个真正的 Python 程序，用 [LangGraph](https://github.com/langchain-ai/langgraph)
+把它编成一个 concept 驱动的研究 agent —— 三个子图（各自独立编译、可单独测试），加一个
+决定 micro/macro、explore/exploit 走向的路由：
+
+```
+eda → propose → experiment → critic → router
+        ↑                                │
+        │        ┌───────────────────────┤
+        │        │ error（retries 未耗尽）→ 直接回 experiment（同代码重跑，不经过 propose）
+        │        ▼
+        │   check_convergence ── done ──→ finalize（写 submission.csv + 资源报告）→ end
+        └────────── continue（router 设好 mode 后）
+```
+
+- `propose`（brain，子图 read_mode → build_context → retrieve_options → llm_generate →
+  validate_diff）：调用 LLM（默认 `gpt-5.5`；`claude-*` 名字会走 Anthropic），根据 router
+  设定的 **mode** 生成下一轮实验。`mode=tune` 延续当前 active concept（换超参/修 bug）；
+  `mode=expand` 是这个 concept 已经 tune 够了（`--tune-cap`，默认 3 次）后的宏观
+  exploit，开一个相邻的新 concept；`mode=pivot` 是这个 concept 失败或跑不通
+  （`--retry-cap`，默认 3 次错误后）之后的宏观 explore，换一个完全不同的方向。
+  **mode 由 router 决定，具体提案永远由 LLM 决定** —— 硬编码"pivot 就必须做
+  BPR"会把 agent 变成脚本化流程，这条边界是故意留着的。`validate_diff` 会真的
+  `ast.parse()` 检查一遍生成的代码，语法错就重新生成一次。system prompt 刻意写得很短
+  （核心规则 + baseline/oracle 数字，~600 token）——**不内嵌整份 README**：候选方向
+  由 `retrieve_options` 每轮单独给，而不是把 190 行 README 复制进每一次调用里。
+- `experiment`（do it safely，子图 apply_diff → run_and_evaluate → collect_metrics，
+  每一步都有失败分支到 emit_failure）：**每轮实验都是全新的 `runs/exp_NNNN/` 文件夹**——
+  写入提议的 `baseline.py`/`data.py`，外加一份固定的 `evaluate.py` 副本（Python 按脚本
+  所在目录解析 import，所以文件夹要自成一体），然后**在这个文件夹里**跑
+  `baseline.py --model fm`。仓库根目录的 `baseline.py`/`data.py` 从 `setup` 之后**再也
+  不会被写入**——不是"写了再撤销"，是从来没被碰过。同一 concept 的 error 重试会换
+  seed（0/1/2...）而不是原样重跑——固定种子下原样重跑一个确定性 bug 只会一直失败，
+  换 seed 才让重试机制真正有意义。
+- `critic`（judge it + log it，子图 compare_to_best → keep_or_revert → classify_outcome
+  → update_counters → write_log）：跟当前最好成绩比较。`keep_or_revert` 不做任何文件
+  操作——因为每轮实验本来就在自己的文件夹里，"revert"就是下一轮 propose 不再读这个
+  文件夹而已，没有东西需要撤销或覆盖。分类成 `improved` / `failed` / `error` 三种结果，
+  写日志。**`write_log` 是全部结构化日志唯一的写入点**：这一轮的 `exp_dir` 路径存进
+  `checkpoints.db`（**SQLite，零新依赖的"tiny db"**，只是个可查询的索引——`iteration`/
+  `concept`/`metrics`/`outcome` → 哪个文件夹，文件内容本身在文件夹里，不在数据库里）
+  成为一行新记录，`runs.jsonl`（AIDE 风格，一行一条完整记录：concept、hypothesis、
+  metrics、outcome、mode、error、tokens、wall-clock、exp_dir）、`results.tsv`（兼容旧
+  格式）、`concepts.json`（每个 concept 的状态与尝试记录）都从这里落盘，随后重新生成
+  `results_dashboard.html`。
+
+**整个循环里没有任何 git commit / git reset。** 早期版本每轮实验一个 git commit，
+discard/crash 就 `git reset --hard` 回上一个最好的 commit——这在实测中出过事故：
+`reset --hard` 是对整个工作区生效的，如果工作区里刚好还有别的没提交的改动（哪怕跟
+实验完全无关），会被一起吃掉；后来改成 SQLite 存文件内容、revert 时写回磁盘，仍然是
+在原地覆盖 `baseline.py`/`data.py`。现在的版本更彻底：每轮实验从一开始就写在自己独立
+的文件夹里，根目录的 `baseline.py`/`data.py` 除了 `setup` 那一次只读性质的 baseline
+训练之外，**全程不会被这个循环写入**。`finalize` 收敛时也不做任何 git 操作——只是把
+`submit.py` 复制一份到最好的那个实验文件夹里，在那里跑 `--make` 生成
+`submission.csv`，写到仓库根目录（普通文件写入，不是 git 操作）。
+
+`router`（读 outcome，决定 mode，`retry_count`/`tune_count` 这两个计数器驱动升级：
+一直 error 就升级成 pivot，一直 tune 就升级成 expand）和 `check_convergence`
+（`no_improve_count >= N`，或迭代/时间到上限）在图里各是独立的节点——不是为了好看，
+是为了让 LangGraph Studio 里能看到这两次决策分别在哪一步发生，而不是折叠成一条不透明的分支。
+
+换来三样东西：
+
+- **图可视化，含子图内部**：`compiled.get_graph(xray=True).draw_mermaid()`
+  （`python -m autoresearch_lg.cli graph`）连 propose/experiment/critic 内部的每一步
+  都画出来，Studio 里可以直接点进子图看。
+- **假设（concept）可追踪**：每个 concept 的状态（`active`/`closed`）、关闭原因
+  （"expanded (maxed out after 3 tunes)" / "pivoted (no improvement)" 等）、每次尝试
+  都在 `concepts.json` 里，跨 `cli.py run` 的多次调用持久化，恢复时会重建
+  `retry_count`/`tune_count`/`no_improve_count`，不会因为重新起进程就悄悄放宽升级条件。
+- **执行过程可视化 + 收尾**：`results_dashboard.html` 每轮实验后自动重生成——valid
+  primary 曲线、concept 列表、完整明细表；跑到收敛时 `finalize` 节点自动调用
+  `submit.py --make` 生成 `submission.csv` 和 `resource_report.json`（迭代数、耗时、
+  token 用量、concept 统计）。**注意**：`submit.py` 是不让 agent 碰的固定文件，硬编码
+  用 `baseline.FM` 类重新训练——只要 agent 的改动保留了 `FM` 的构造签名和
+  `.step()`/`.predict()` 接口（loss/超参/特征类改动都满足），`finalize` 就能正常生成提交；
+  换掉整个模型类（DeepFM 之类，headroom 里本来就排最后）会让这步失败，`finalize`
+  会把失败原因写进报告而不是假装成功。
+
+代价：需要自己的 `ANTHROPIC_API_KEY`（Claude Code 会话本身的凭据不能被子进程里的
+Anthropic SDK 直接复用），多了 `langgraph` + `anthropic` 两个依赖 —— 注意这是
+**编排层**的依赖，不是 `baseline.py`/`data.py` 的；"numpy + stdlib only" 那条约束
+仍然只管评测用的模型代码本身没变。
+
+**一键脚本**（`setup.sh` / `setup.ps1`，仓库根目录）：建虚拟环境、装依赖、从
+`.env.example` 生成 `.env`（已存在则跳过，不会覆盖你的 key）、检查 KuaiRand-Pure
+数据在不在。幂等，重复跑无害。
+
+```bash
+./setup.sh          # bash / git-bash / Linux / macOS
+```
+```powershell
+.\setup.ps1          # PowerShell
+```
+
+跑完自己 activate 虚拟环境（脚本会打印确切命令），然后按脚本末尾提示继续。
+
+**或者手动**（不想装到系统 Python 里 —— 会跟其它全局包版本冲突，而且 Windows 上
+系统 Python 的 `Scripts/` 目录多半没在 PATH 上，装完 `langgraph` 命令直接
+`command not found`）：
+
+```powershell
+# PowerShell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e . "langgraph-cli[inmem]"
+```
+
+```bash
+# bash / git-bash
+python3 -m venv .venv
+source .venv/Scripts/activate   # Linux/macOS 用 .venv/bin/activate
+pip install -e . "langgraph-cli[inmem]"
+```
+
+`pip install -e .` 装的是 `pyproject.toml` 里声明的依赖（`langgraph`、`anthropic`、
+`python-dotenv`，Windows 上还有 `colorama` —— 没装的话 `langgraph dev` 会在启动时炸
+`ValueError: Unable to configure formatter 'simple'`，因为它的日志渲染器在 Windows
+上要靠 colorama 上色）。装进虚拟环境后 `langgraph`/`python` 等命令都在
+`.venv\Scripts\`（或 `.venv/bin/`）下，激活虚拟环境后直接用命令名即可，不用管全局 PATH。
+
+API key 只需要在仓库根目录放一个 `.env` 文件（复制 `.env.example`，填一行
+`ANTHROPIC_API_KEY=...`）——`autoresearch_lg.cli` 和 `langgraph dev` 都会自动读它
+（前者用 `python-dotenv`，后者是 `langgraph.json` 的 `env` 字段指的）。`.env` 已经在
+`.gitignore` 里，不会被提交。
+
+```bash
+python -m autoresearch_lg.cli setup --tag aug29   # 开分支、跑一次 baseline 打底
+python -m autoresearch_lg.cli run   --tag aug29    # 跑到收敛为止（默认 50 轮 / 6 小时上限）
+python -m autoresearch_lg.cli dashboard            # 不跑实验，只重新生成看板
+python -m autoresearch_lg.cli graph                # 不需要 API key，只打印图结构（含子图）
+```
+
+`run` 的循环现在真的在图里面，不是外面套一层 Python `for`（早期版本是后者——图结构
+简单，但 LangGraph Studio 里看到的只是一条直线到 end，看不出「循环」在哪；`keep_or_revert`
+之后的判断——同一个 concept 继续 tune，还是关掉它开一个新的——现在是图自己的环）。
+`cli.py` 只对整个图做一次 `.stream()` 调用，跑到收敛（或 `--max-iterations`/
+`--max-wall-hours`）图自己停并触发 `finalize`；Ctrl+C 依然安全，因为每轮实验完成时
+`results.tsv` / `runs.jsonl` / `concepts.json` / `checkpoints.db` 已经落盘，中断只是
+丢失还没跑完的那一轮，重新 `run` 会重建计数器接着跑——而且因为循环本身不再碰 git，
+中断也不可能像早期版本那样连累到工作区里其它无关的改动。
+
+**用 LangGraph Studio 交互式可视化**（比静态 mermaid 图更进一步 —— 能点进
+propose/experiment/critic 三个子图内部看每一步、手动 invoke、查看每轮的输入输出）：
+
+```bash
+langgraph dev --no-browser        # 读 langgraph.json，起本地 dev server（虚拟环境已激活）
+# 打开 https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
+```
+
+`langgraph.json` 里的 `graphs` 指向 `autoresearch_lg/graph.py` 里的模块级 `graph`
+变量（用 `autoresearch_lg.graph:graph` 这种点号路径，而不是文件路径 ——
+`graph.py` 内部用了包内相对 import，文件路径形式的 spec 会因为脱离包上下文而
+`ImportError: attempted relative import`）。起 dev server 本身不需要
+`ANTHROPIC_API_KEY`（只是导入、编译图）；在 Studio 里点 invoke 跑 `propose` 子图才需要。
+
+**从终端跑，同时在 Studio 面板里看**：`cli.py run` 是直接在自己的 Python 进程里调
+`compiled.stream()`，跟 dev server 完全无关，Studio 看不到它。`run_via_api.py` 走的是
+dev server 的 REST API（`langgraph_sdk`），所以从终端起的这次跑会变成一个真实的 Studio
+thread，可以打开链接实时看：
+
+```bash
+python -m autoresearch_lg.run_via_api --tag aug29 --model claude-sonnet-5
+# 打印出 thread id 和一个可以直接打开的 Studio 链接
+```
+
+需要先起好 `langgraph dev`（上面那步）。
+
 ## 文件
 
 | | |
@@ -185,6 +355,13 @@ prompt）即可启动：agent 会开一个 `autoresearch/<tag>` 分支，反复�
 | `data.py` | 数据加载、官方划分、特征编码。加特征改这里。 |
 | `baseline.py` | 三个 baseline。FM 是要打败的那个。 |
 | `baseline_scores.json` | 官方发布的分数 + 种子方差 + 收敛参数。 |
-| `submit.py` | 生成 / 校验提交文件。 |
+| `submit.py` | 生成 / 校验提交文件。agent 不能改这个文件。 |
 | `ablation_features.py` | 特征消融实验，可复现「加特征没有收益」那组数字。 |
 | `program.md` | 自主研究循环的 agent 指令（改编自 autoresearch-win-rtx），配合 `/loop` 或长会话 agent 使用。 |
+| `autoresearch_lg/` | 同一个循环的 LangGraph 代码实现（propose/experiment/critic 三个子图 + 主循环），需要 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`（看 `--model`）。 |
+| `setup.sh` / `setup.ps1` | 一键建虚拟环境 + 装依赖 + 生成 `.env` + 检查数据，幂等。 |
+| `runs/` | 每轮实验自己的文件夹（`exp_0001/` 等），各自一份 `baseline.py`/`data.py`/`evaluate.py`。根目录的 `baseline.py`/`data.py` 不会被这个循环写入。gitignored。 |
+| `concepts.json` | `autoresearch_lg` 跑起来后生成——每个 concept 的状态/重试次数/最好成绩，`run` 命令之间持久化。 |
+| `runs.jsonl` | `autoresearch_lg` 的结构化日志（AIDE 风格，一行一条完整记录），required deliverable。 |
+| `checkpoints.db` | `autoresearch_lg` 的 SQLite 索引——`iteration`/`concept`/`metrics`/`outcome` → `runs/` 里对应的文件夹，不存文件内容本身。 |
+| `resource_report.json` | `autoresearch_lg` 收敛后生成——迭代数、耗时、token 用量、concept 统计。 |
