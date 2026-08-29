@@ -24,22 +24,74 @@ bash scripts/download_data.sh    # or: powershell scripts/download_data.ps1
 uv run pytest tests/ -q          # 34 tests
 ```
 
-Run the agent:
-
-```bash
-uv run python -m autoresearch_lg.cli graph                # free — prints the loop
-uv run python -m autoresearch_lg.cli setup --tag run1     # reproduces the baseline
-uv run python -m autoresearch_lg.cli run   --tag run1 --max-iterations 2
-uv run langgraph dev --no-browser                         # LangGraph Studio; submit {}
-```
-
 Run a model by hand:
 
 ```bash
 uv run python -m tippytop run --model fm --no-log
-uv run python -m tippytop run --model fm_seedavg --no-log
+uv run python -m tippytop run --model fm_ffm --no-log
 uv run python -m tippytop submit --model fm --split test --out results/submissions/fm.csv
 ```
+
+---
+
+## Running the agent
+
+No venv activation — `uv run` handles it. Two ways in.
+
+### A. Command line
+
+```bash
+uv run python -m autoresearch_lg.cli graph                 # free: prints the loop, no API calls
+uv run python -m autoresearch_lg.cli setup --tag run1      # ~65s, reproduces the FM baseline
+uv run python -m autoresearch_lg.cli run   --tag run1 --max-iterations 2
+uv run python -m autoresearch_lg.cli dashboard             # read the results back
+```
+
+`setup` creates a git branch `autoresearch/<tag>` and switches to it, and refuses
+to reuse a tag — **pick a fresh tag per run**. It is also the gate: if the
+baseline does not reproduce, stop and fix that before trusting any later number.
+
+Drop `--max-iterations` for the full 50-iteration / 6-hour run. Safe to Ctrl+C at
+any point — every completed iteration is already durable on disk.
+
+### B. LangGraph Studio (visual)
+
+```bash
+uv run langgraph dev --no-browser
+```
+
+It prints an API URL and a Studio UI URL; ctrl-click the Studio one. Then:
+
+1. In the **Input** panel, click **View Raw**
+2. Replace the contents with `{}`
+3. **Submit**
+
+The form shows every state field as "Required", but you do not fill them in —
+the `bootstrap` node exists precisely so an empty `{}` works, filling in repo
+root, data path and config defaults. Override selectively if you want, e.g.
+`{"model": "claude-opus-5", "max_iterations": 5}`.
+
+Nodes light up as they run and you can click any of them to inspect the state
+going in and out, which is the reason to prefer Studio while learning the loop.
+Use the CLI for long runs.
+
+> **Cost.** `graph`, `dashboard` and `setup` make no LLM calls. Everything from
+> `propose` onward does: one Claude call plus a training run per iteration.
+> Start with 2 iterations and confirm `runs.jsonl` looks right before committing
+> to 50.
+
+> The "LangSmith API key missing" banner in Studio is harmless — that is optional
+> cloud tracing, not required for any part of the run.
+
+### What to check after a run
+
+```bash
+uv run python -m autoresearch_lg.cli dashboard
+```
+
+`runs.jsonl` must contain, per iteration: hypothesis, code diff, resulting
+metrics, and any error/recovery event — these are graded deliverables, so verify
+the shape on a 2-iteration run rather than after a 6-hour one.
 
 ---
 
