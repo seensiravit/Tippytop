@@ -8,7 +8,8 @@ KuaiRand-Pure.tar.gz
 .env.*
 !.env.example
 
-# Agent run artifacts (autoresearch_lg)
+# Agent run artifacts (autoresearch_lg) — scratch by default: every `setup`
+# archives the previous run's copies, so the root ones are transient.
 runs/
 run.log
 results.tsv
@@ -39,3 +40,10 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+
+# ...EXCEPT the final run. runs.jsonl, resource_report.json and the submission
+# are graded deliverables (per-iteration hypothesis/diff/metrics/recovery, and
+# total tokens + wall-clock + iterations), and a grader cannot see files that
+# are not in the repository. Copy the chosen run's artifacts here and commit.
+!results/final_run/
+!results/final_run/**
