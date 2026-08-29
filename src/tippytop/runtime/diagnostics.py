@@ -31,6 +31,7 @@ def runtime_failure_diagnostics(source: str, error: str) -> dict[str, Any]:
     infeasible_match = _INFEASIBLE_SMOKE.search(error)
     if infeasible_match is not None:
         return {
+            "kind": "full_data_infeasible",
             "smoke_seconds": float(infeasible_match.group("smoke_seconds")),
             "sample_rows": int(infeasible_match.group("sample_rows")),
             "projected_full_seconds": float(infeasible_match.group("projected_seconds")),
@@ -49,6 +50,7 @@ def runtime_failure_diagnostics(source: str, error: str) -> dict[str, Any]:
         training_only = {"long_view", *AUXILIARY_COLUMNS}
         if missing and set(missing) <= training_only:
             return {
+                "kind": "missing_prediction_outcomes",
                 "missing_prediction_columns": missing,
                 "prediction_columns": [
                     "date",
@@ -92,6 +94,7 @@ def runtime_failure_diagnostics(source: str, error: str) -> dict[str, Any]:
                 "or correct the reference; do not guess a different capitalization."
             )
         return {
+            "kind": "missing_dataframe_column",
             "missing_dataframe_column": missing_column,
             "canonical_column": canonical,
             "training_columns": list(TRAINING_COLUMNS),
@@ -102,6 +105,7 @@ def runtime_failure_diagnostics(source: str, error: str) -> dict[str, Any]:
     group_match = _GROUP_SIZE_MISMATCH.search(error)
     if group_match is not None:
         return {
+            "kind": "ranker_group_size_mismatch",
             "reported_query_count": int(group_match.group("group_rows")),
             "reported_data_length": int(group_match.group("data_rows")),
             "required_action": (
@@ -118,6 +122,7 @@ def runtime_failure_diagnostics(source: str, error: str) -> dict[str, Any]:
     class_name = match.group("class_name")
     method_name = match.group("method")
     diagnostics: dict[str, Any] = {
+        "kind": "unexpected_method_keyword",
         "unexpected_keyword": match.group("keyword"),
         "failing_call": f"{class_name}.{method_name}",
     }

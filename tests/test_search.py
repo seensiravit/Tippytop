@@ -347,3 +347,75 @@ def test_accepted_fourth_patch_gets_a_fresh_repair_budget_after_execution_failur
     assert executions == 3
     assert outcome.experiment_id == "iteration-001-repair-2"
     assert state["llm_usage"]["total_tokens"] == 8
+
+
+def test_repeated_trusted_failure_stops_patching_same_experiment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for directory in ("checkpoints", "diffs", "transactions"):
+        (tmp_path / directory).mkdir()
+    store = RunStore(tmp_path)
+    state = {
+        "elapsed_seconds": 0.0,
+        "llm_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+    source = "def fit(train_rows, seed):\n    return 1\n\ndef predict(model, rows):\n    return [model] * len(rows)\n"
+    experiment = GeneratedExperiment("Repair it", "Complete execution", source)
+    plan = ResearchPlan(
+        "Repair it",
+        "Complete execution",
+        "Avoid an unchanged runtime failure.",
+        "No prior work.",
+        (),
+        "Simple model",
+        ("Repair the grouping invariant",),
+        ("Repeated group mismatch",),
+    )
+    attempt = {"iteration": 1, "experiment_id": "iteration-001", "recovery": []}
+
+    class RepairClient:
+        calls = 0
+
+        def repair(self, _context: object, failed: GeneratedExperiment, *_args: object, **_kwargs: object):
+            self.calls += 1
+            repaired_source = failed.source.replace(
+                f"return {self.calls}",
+                f"return {self.calls + 1}",
+                1,
+            )
+            return GeneratedExperiment("Repair it", "Complete execution", repaired_source), []
+
+    def run(*_args: object, **_kwargs: object):
+        from tippytop.runtime import ExperimentFailure
+
+        raise ExperimentFailure(
+            "Sum of query counts (10000) differs from the length of #data (17642)"
+        )
+
+    monkeypatch.setattr("tippytop.search.execution.run_experiment", run)
+    client = RepairClient()
+
+    outcome = execute_with_repairs(
+        RunConfig(),
+        store,
+        state,
+        client,  # type: ignore[arg-type]
+        {},
+        plan,
+        experiment,
+        "iteration-001",
+        {experiment.source_hash},
+        [],
+        tmp_path / "unused.pkl",
+        "revision",
+        time.monotonic() + 30,
+        time.monotonic(),
+        attempt,
+    )
+
+    assert outcome.result is None
+    assert client.calls == 2
+    assert outcome.experiment_id == "iteration-001-repair-2"
+    assert outcome.recovery[-1]["action"] == "repeated_failure_limit_reached_start_new_research"
+    assert outcome.recovery[-1]["repeated_failure_kind"] == "ranker_group_size_mismatch"

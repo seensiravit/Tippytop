@@ -22,6 +22,7 @@ from .records import add_usage, response_dict, source_diff
 
 MAX_EXECUTED_REPAIRS = 8
 MAX_REJECTED_REPAIR_REQUESTS_PER_FAILURE = 4
+MAX_REPEATED_FAILURE_KIND = 3
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,27 @@ def execute_with_repairs(
                         "diagnostics": failure["diagnostics"],
                         "action": "executed_repair_limit_reached_restore_previous_best",
                     }
+                )
+                attempt.update(recovery=recovery)
+                update_attempt(store, attempt)
+                break
+            repeated_kind = _repeated_failure_kind(failure_history)
+            if repeated_kind is not None:
+                recovery.append(
+                    {
+                        "experiment_id": experiment_id,
+                        "source_hash": experiment.source_hash,
+                        "error": execution_error,
+                        "diagnostics": failure["diagnostics"],
+                        "repeated_failure_kind": repeated_kind,
+                        "action": "repeated_failure_limit_reached_start_new_research",
+                    }
+                )
+                store.event(
+                    "repair_stagnated",
+                    iteration=attempt["iteration"],
+                    failure_kind=repeated_kind,
+                    occurrences=MAX_REPEATED_FAILURE_KIND,
                 )
                 attempt.update(recovery=recovery)
                 update_attempt(store, attempt)
@@ -323,3 +345,21 @@ def _bounded_error(error: str, limit: int = 1200) -> str:
     prefix = error[:300]
     suffix = error[-(limit - len(prefix) - 40) :]
     return f"{prefix}\n... traceback truncated ...\n{suffix}"
+
+
+def _repeated_failure_kind(failures: list[dict[str, Any]]) -> str | None:
+    """Detect an unchanged trusted failure class across recent executions."""
+
+    if not failures:
+        return None
+    diagnostics = failures[-1].get("diagnostics", {})
+    kind = diagnostics.get("kind") if isinstance(diagnostics, dict) else None
+    if not isinstance(kind, str):
+        return None
+    occurrences = sum(
+        1
+        for failure in failures
+        if isinstance(failure.get("diagnostics"), dict)
+        and failure["diagnostics"].get("kind") == kind
+    )
+    return kind if occurrences >= MAX_REPEATED_FAILURE_KIND else None

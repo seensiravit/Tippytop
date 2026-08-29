@@ -23,6 +23,7 @@ def test_ranker_group_size_mismatch_explains_the_required_invariant() -> None:
 
     assert diagnostics["reported_query_count"] == 3398
     assert diagnostics["reported_data_length"] == 37378
+    assert diagnostics["kind"] == "ranker_group_size_mismatch"
     assert "positive and negative" in diagnostics["required_action"]
 
 
@@ -59,6 +60,7 @@ def test_pandas_key_error_reports_the_canonical_case_sensitive_column() -> None:
     )
 
     assert diagnostics["missing_dataframe_column"] == "UserID"
+    assert diagnostics["kind"] == "missing_dataframe_column"
     assert diagnostics["canonical_column"] == "user_id"
     assert "case-sensitive" in diagnostics["required_action"]
 
