@@ -67,6 +67,14 @@ def cmd_setup(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    # A new tag means a new run. Run artifacts live at the repo root, not under
+    # the tag, and bootstrap derives `iteration` from the length of runs.jsonl —
+    # so without this the new run inherits the previous one's iteration count
+    # and can hit its budget before running anything.
+    archived = tools.archive_run_artifacts(root)
+    if archived:
+        print(f"archived the previous run's artifacts to {archived}")
+
     results_path = str(Path(root, "results.tsv"))
     dashboard_path = str(Path(root, "results_dashboard.html"))
     concepts_path = str(Path(root, "concepts.json"))

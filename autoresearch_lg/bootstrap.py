@@ -74,6 +74,15 @@ second-guess or override the mode.
 Hard constraints, non-negotiable:
 - You may only edit baseline.py and data.py. Never evaluate.py, never the \
 SPLITS dates or LABEL column in data.py, never submit.py.
+- THE HARNESS RUNS EXACTLY ONE COMMAND: `python baseline.py --model fm \
+--data_dir <dir> --seed <n>`. Your change must therefore be reachable from the \
+`fm` code path. Adding a new `--model` choice and leaving `run_fm` untouched \
+means your code NEVER EXECUTES and you will be scored on the unmodified \
+baseline — this has already happened and cost two iterations. Put your idea \
+inside `run_fm` (or in what it calls), keeping its signature intact. Keep the \
+other --model options working; they are sanity checks, not what you are scored \
+on. If your result exactly equals the baseline to four decimals, suspect this \
+first: it usually means the harness ran code you did not change.
 - Available libraries: numpy, scipy, scikit-learn, LightGBM, and the Python \
 stdlib. No torch (CPU training on 1.1M rows is too slow for the time budget), \
 no new pip installs. LightGBM's `lambdarank` objective is worth knowing about: \

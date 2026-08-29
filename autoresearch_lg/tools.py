@@ -7,6 +7,7 @@ client or LangGraph.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -19,6 +20,20 @@ from pathlib import Path
 # that resolves to the Microsoft Store alias stub ("Python was not found"), and
 # on any platform it can pick an interpreter outside our venv (missing numpy).
 PYTHON = sys.executable
+
+
+def _child_env() -> dict:
+    """Environment for every subprocess: force UTF-8 stdio.
+
+    The kit's submit.py prints a U+2713 check mark on success. On Windows the
+    child's stdout defaults to the ANSI code page (cp1252), which cannot encode
+    it, so submit.py --check dies with UnicodeEncodeError *after* writing a
+    perfectly valid submission -- and finalize reports the submission as FAILED.
+    Observed on run2. PYTHONIOENCODING fixes it without touching the frozen kit.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 RUN_TIMEOUT_SECONDS = 600  # program.md: kill and discard past 10 minutes
 EDA_TIMEOUT_SECONDS = 60
@@ -128,7 +143,7 @@ def run_baseline(cwd: str, data_dir: str, seed: int = 0) -> dict:
     start = time.time()
     try:
         res = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True,
+            cmd, cwd=cwd, capture_output=True, text=True, env=_child_env(),
             timeout=RUN_TIMEOUT_SECONDS,
         )
         wall = time.time() - start
@@ -162,7 +177,7 @@ def run_eda(repo_root: str, data_dir: str) -> dict:
     try:
         res = subprocess.run(
             [PYTHON, "-c", _EDA_SCRIPT, data_dir],
-            cwd=repo_root, capture_output=True, text=True,
+            cwd=repo_root, capture_output=True, text=True, env=_child_env(),
             timeout=EDA_TIMEOUT_SECONDS,
         )
         if res.returncode != 0:
@@ -182,6 +197,34 @@ def parse_summary(stdout: str) -> tuple[float, float] | None:
 
 # ------------------------------------------------------------ results.tsv-
 RESULTS_HEADER = "commit\tvalid_primary\ttest_primary\twall_seconds\tstatus\tdescription\n"
+
+
+RUN_ARTIFACTS = ("runs.jsonl", "results.tsv", "concepts.json", "checkpoints.db",
+                 ".autoresearch_start_time", "results_dashboard.html")
+
+
+def archive_run_artifacts(repo_root: str) -> str | None:
+    """Move a previous run's artifacts aside so a new tag starts from zero.
+
+    These live at the repo root and are NOT per-tag, while bootstrap
+    reconstructs `iteration` from the length of runs.jsonl. Without this, a
+    fresh `setup --tag X` inherits the previous run's iteration count -- observed
+    on run2, which began "3/3 iterations used", ran one experiment and stopped.
+
+    Moved, never deleted: runs.jsonl is a required deliverable, and a run that
+    is superseded is not a run that should be destroyed.
+
+    Returns the archive directory, or None if there was nothing to move.
+    """
+    root = Path(repo_root)
+    present = [f for f in RUN_ARTIFACTS if (root / f).exists()]
+    if not present:
+        return None
+    dest = root / "runs" / f"_archive_{time.strftime('%Y%m%dT%H%M%S')}"
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in present:
+        shutil.move(str(root / f), str(dest / f))
+    return str(dest)
 
 
 def init_results_tsv(path: str) -> None:
@@ -272,7 +315,8 @@ def make_submission(best_exp_dir: str, repo_root: str, data_dir: str, out_path: 
     make = subprocess.run(
         [PYTHON, "submit.py", "--make", "--split", "test",
          "--data_dir", data_dir, out_abs],
-        cwd=best_exp_dir, capture_output=True, text=True, timeout=RUN_TIMEOUT_SECONDS,
+        cwd=best_exp_dir, capture_output=True, text=True, env=_child_env(),
+        timeout=RUN_TIMEOUT_SECONDS,
     )
     if make.returncode != 0:
         return False, (
@@ -283,7 +327,7 @@ def make_submission(best_exp_dir: str, repo_root: str, data_dir: str, out_path: 
     check = subprocess.run(
         [PYTHON, "submit.py", "--check", "--split", "test",
          "--data_dir", data_dir, out_abs],
-        cwd=best_exp_dir, capture_output=True, text=True, timeout=60,
+        cwd=best_exp_dir, capture_output=True, text=True, env=_child_env(), timeout=60,
     )
     if check.returncode != 0:
         return False, f"submission written but failed --check:\n{check.stderr[-2000:]}"

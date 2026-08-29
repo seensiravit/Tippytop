@@ -227,6 +227,22 @@ def llm_generate(state: ResearchState) -> dict:
         "\nRun history:\n" + state["context_summary"],
         "\n" + state["retrieved_options"],
     ]
+    # A bit-identical result means the harness ran code the model did not
+    # change -- overwhelmingly, a new --model choice added while run_fm, the
+    # only path the harness invokes, was left untouched. Say so loudly: without
+    # it the model reads "no change" as "my idea is neutral" and tunes something
+    # that never runs. Cost two iterations on run3 before it was caught.
+    history = state.get("history") or []
+    if history and abs(history[-1]["metrics"]["valid_primary"]
+                       - state["best_valid_primary"]) < 1e-9:
+        parts.append(
+            "\nWARNING: the previous experiment scored EXACTLY the incumbent, to "
+            "four decimals. That is almost never a real result — it means the "
+            "harness executed code you did not change. The harness runs ONLY "
+            "`baseline.py --model fm`, so an idea added as a new --model choice, "
+            "or anywhere outside the `run_fm` path, never executes. Check that "
+            "your change is reachable from run_fm before proposing anything else."
+        )
     if state["diff_error"]:
         parts.append(
             f"\nYour previous proposal this round did not parse as valid "

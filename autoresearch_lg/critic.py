@@ -34,6 +34,22 @@ def compare_to_best(state: ResearchState) -> dict:
     return {"delta": state["valid_primary"] - state["best_valid_primary"]}
 
 
+# An experiment that scores EXACTLY the incumbent, to the 4 decimals the summary
+# prints, almost never means "this idea is precisely as good". It means the
+# harness ran code the model did not change -- most often because the model added
+# a new `--model` choice while `run_fm`, the only path the harness invokes, was
+# left untouched. Observed twice on run3, costing two iterations and ~26k tokens
+# of dead code. Surfaced to the model so it can correct itself rather than
+# spending its budget tuning something that never runs.
+_NO_OP_TOLERANCE = 1e-9
+
+
+def detect_no_op(state: ResearchState) -> bool:
+    """True when the result is bit-identical to the incumbent's."""
+    return (not state["step_failed"]
+            and abs(state.get("delta", 0.0)) < _NO_OP_TOLERANCE)
+
+
 def keep_or_revert(state: ResearchState) -> dict:
     return {}
 
