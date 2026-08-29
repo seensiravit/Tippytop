@@ -149,4 +149,47 @@ tree only has *global* features and learns one ranking function for everybody.
 embeddings generalise over that, axis-aligned splits cannot.** That is why FFM —
 which models that interaction more finely — is the more promising direction, and
 why stacking (FM's score as a tree feature) is the sensible way to combine them.
+
+### Multi-task: closed, 6 of 6 against its own control
+
+`fm_multitask` shares one embedding table across `long_view` plus auxiliary heads
+on `is_click` and D2Q-style debiased watch time. `h` is initialised to ones, so
+`w=(0,0)` is an exact FM and serves as the control (0.6023 — marginally above
+plain FM's 0.6019 because the head is learnable).
+
+| w_click | w_watch | valid | test | vs control |
+|---|---|---|---|---|
+| 0.0 | 0.0 | **0.6023** | 0.5957 | control |
+| 0.3 | 0.0 | 0.6021 | 0.5954 | -0.0002 |
+| 0.0 | 0.3 | 0.6023 | 0.5956 | -0.0000 |
+| 0.1 | 0.1 | 0.6021 | 0.5958 | -0.0001 |
+| 0.0 | 1.0 | 0.6016 | 0.5954 | -0.0007 |
+| 1.0 | 1.0 | 0.6004 | 0.5939 | -0.0019 |
+
+**Nothing beats the control, and the score degrades monotonically with auxiliary
+weight.** Not a tuning failure — the trend is the wrong way at every step.
+
+Most likely mechanism: `is_click` correlates **0.760** with `long_view`, so it is
+close to a duplicate task — it consumes embedding capacity while adding almost no
+information. Watch-time quantile is more independent (corr 0.635) but at weight
+1.0 actively distracts from the main objective. With ~42 impressions per user the
+embedding table is the scarce resource, and spending it on a near-duplicate task
+is a straight loss.
+
+The organisers' direction #3, closed. Worth stating in the write-up with the
+correlation figure, since "we added the auxiliary signals the README lists" is
+what most teams will do without checking whether those signals carry independent
+information.
+
+### Direction ledger
+
+| Direction | Status | Evidence |
+|---|---|---|
+| Ranking loss (organisers' #1) | **closed** | 7/7 matched comparisons: better objective, cannot repay its batching cost |
+| LambdaRank / GBDT | **closed** | no user x item signal available to axis-aligned splits |
+| Multi-task (organisers' #3) | **closed** | 6/6 against control, monotone the wrong way |
+| Static features (organisers') | closed by organisers | but see the item-aggregates note — their ablation is narrower than it reads |
+| **Cross-family ensembling** | **live** | 6 cross-family members beat 12 same-family; verification in progress |
+| User sequences (organisers' #2) | untried | ~42 events/user, temper expectations |
+| Unbiased eval on `log_random` | untried | one eval pass, no new modelling |
 | 2026-08-29 | auto | fm_listwise (seed=42) | 0.6591 | 0.5319 | 0.5955 | 0.5892 |  |

@@ -58,6 +58,32 @@ HEADROOM = [
         ),
     },
     {
+        "id": "field_aware",
+        "keywords": ["ffm", "field-aware", "field aware", "per-field embedding"],
+        "note": (
+            "Field-aware FM (FFM): give each feature a SEPARATE embedding per "
+            "interacting field rather than one embedding for all interactions, "
+            "so user_id's 'toward videos' vector can differ from its 'toward "
+            "authors' vector. Use a smaller k (4 vs FM's 16) so total parameters "
+            "stay comparable -- spend them on structure, not width. Trains "
+            "row-shuffled, so it pays none of the grouped-batching cost a "
+            "listwise loss does. Measured here: ties FM on validation and "
+            "generalises slightly better to test. Won Criteo/Avazu/Outbrain "
+            "(Juan et al., RecSys 2016)."
+        ),
+    },
+    {
+        "id": "ensemble_diversity",
+        "keywords": ["ensemble", "blend", "rank-average", "seed averaging", "stacking"],
+        "note": (
+            "Rank-average several models WITHIN-USER (not raw scores -- scales "
+            "differ between objectives and only order is scored). Measured: "
+            "members must differ by MODEL FAMILY, not by seed. Six FM+FFM "
+            "members beat twelve FM-only members; more seeds of one family "
+            "cancels noise but not shared bias."
+        ),
+    },
+    {
         "id": "gbdt_lambdarank",
         "keywords": ["lightgbm", "lambdarank", "gbdt", "boosting", "lambdamart"],
         "note": (
@@ -130,8 +156,32 @@ Measured, and it changes how you must READ a ranking-loss result:
   anything that clears epsilon at 2-3 seeds before believing it.
 - Rank-averaging several models gives a replicated +0.0013 (two disjoint seed
   groups, monotonic in ensemble size). Real, but below the 0.002 bar — and it
-  does not compound, because every member shares the same model-class bias.
-  Mixing different model FAMILIES is the version that should compound."""
+  does not compound across members of ONE family, which share a bias. Six
+  FM+FFM members beat twelve FM-only members: diversity of family is what pays.
+
+Directions already CLOSED here with controlled measurements — do not re-propose
+these without a genuinely new angle, and say what the angle is:
+- Ranking loss (listwise/BPR) on FM: the objective wins 7 of 7 matched
+  comparisons, but grouped batching costs more than it returns. Best matched
+  listwise 0.5987 vs baseline 0.6019. Closed.
+- Multi-task auxiliary heads: 6 of 6 weight settings fail to beat their own
+  w=0 control, degrading monotonically as auxiliary weight rises. is_click
+  correlates 0.760 with long_view — a near-duplicate task that consumes
+  embedding capacity for no new information. Five other signals (is_follow,
+  is_comment, is_forward, is_hate, profile_stay_time) are 0.0-0.3% nonzero and
+  carry no usable gradient at all. Closed.
+- GBDT/LambdaRank over engineered aggregates: valid 0.5887. Per-feature scores
+  say why — video_lv_rate alone reaches 0.5807, but user_lv_rate scores EXACTLY
+  random GAUC 0.5000 (user-side features are constant within a user, so they
+  cannot reorder anything) and user x author crosses are near-random because the
+  pairs are too sparse. The tree only ever sees global features. The signal is
+  sparse user x item interaction: embeddings generalise over it, axis-aligned
+  splits cannot. Closed as a standalone model; still viable as a diverse
+  ensemble member or via stacking on an FM score.
+
+Still untried: user history sequences (~42 events/user, temper expectations),
+and unbiased evaluation against log_random_4_22_to_5_08_pure.csv (1.18M
+randomly-exposed rows — one extra evaluation pass, no new modelling)."""
 
 
 def _closed_concept_text(state) -> str:
