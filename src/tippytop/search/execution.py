@@ -58,6 +58,7 @@ def execute_with_repairs(
     execution_error: str | None = None
     artifact_dir = store.path / "checkpoints" / experiment_id
     failure_history = _prior_failure_history(recovery)
+    repair_requests = 0
 
     for repair_number in range(MAX_RUNTIME_REPAIRS + 1):
         store.event(
@@ -157,61 +158,113 @@ def execute_with_repairs(
             persist_state(store, state, wall_started)
             break
 
-        try:
-            store.event(
-                "repair_requested",
-                iteration=attempt["iteration"],
-                experiment_id=experiment_id,
-                source_hash=experiment.source_hash,
-                repair_number=repair_number + 1,
-            )
-            repaired, repair_responses = llm.repair(
-                context,
-                experiment,
-                execution_error,
-                plan=research_plan,
-                failure_history=failure_history,
-                deadline=deadline,
-            )
-            responses.extend(repair_responses)
-            add_usage(state, repair_responses)
-            if repaired.source_hash in used_hashes:
-                raise ValueError("repair repeated source that was already attempted")
-            used_hashes.add(repaired.source_hash)
-            next_repair = repair_number + 1
-            repaired_id = f"iteration-{attempt['iteration']:03d}-repair-{next_repair}"
-            atomic_write_text(
-                store.path / "diffs" / f"{attempt['iteration']:03d}-repair-{next_repair}.diff",
-                source_diff(
-                    experiment.source,
-                    repaired.source,
-                    f"{experiment_id}-failed",
-                    repaired_id,
-                ),
-            )
-            experiment = repaired
-            experiment_id = repaired_id
-            artifact_dir = store.path / "checkpoints" / experiment_id
-            attempt.update(
-                experiment_id=experiment_id,
-                hypothesis=experiment.hypothesis,
-                expected_effect=experiment.expected_effect,
-                source_hash=experiment.source_hash,
-                source_hashes=sorted(used_hashes),
-                recovery=recovery,
-                experiment=experiment.to_dict(),
-                responses=[response_dict(response) for response in responses],
-            )
-            update_attempt(store, attempt)
-        except (ConnectionError, ValueError, LLMDeadlineExceeded) as repair_error:
-            if isinstance(repair_error, (GenerationFailure, LLMTransportFailure)):
-                responses.extend(repair_error.responses)
-                add_usage(state, repair_error.responses)
-            execution_error = str(repair_error)
+        repaired_ready = False
+        while repair_requests < MAX_RUNTIME_REPAIRS:
+            repair_requests += 1
+            try:
+                store.event(
+                    "repair_requested",
+                    iteration=attempt["iteration"],
+                    experiment_id=experiment_id,
+                    source_hash=experiment.source_hash,
+                    repair_number=repair_requests,
+                )
+                repaired, repair_responses = llm.repair(
+                    context,
+                    experiment,
+                    execution_error,
+                    plan=research_plan,
+                    failure_history=failure_history,
+                    deadline=deadline,
+                )
+                responses.extend(repair_responses)
+                add_usage(state, repair_responses)
+                if repaired.source_hash in used_hashes:
+                    raise ValueError("repair repeated source that was already attempted")
+                used_hashes.add(repaired.source_hash)
+                next_repair = repair_number + 1
+                repaired_id = f"iteration-{attempt['iteration']:03d}-repair-{next_repair}"
+                atomic_write_text(
+                    store.path / "diffs" / f"{attempt['iteration']:03d}-repair-{next_repair}.diff",
+                    source_diff(
+                        experiment.source,
+                        repaired.source,
+                        f"{experiment_id}-failed",
+                        repaired_id,
+                    ),
+                )
+                experiment = repaired
+                experiment_id = repaired_id
+                artifact_dir = store.path / "checkpoints" / experiment_id
+                attempt.update(
+                    experiment_id=experiment_id,
+                    hypothesis=experiment.hypothesis,
+                    expected_effect=experiment.expected_effect,
+                    source_hash=experiment.source_hash,
+                    source_hashes=sorted(used_hashes),
+                    recovery=recovery,
+                    experiment=experiment.to_dict(),
+                    responses=[response_dict(response) for response in responses],
+                )
+                update_attempt(store, attempt)
+                repaired_ready = True
+                break
+            except LLMDeadlineExceeded as repair_error:
+                execution_error = str(repair_error)
+                recovery.append(
+                    {
+                        "error": execution_error,
+                        "action": "wall_clock_limit_restore_previous_best",
+                    }
+                )
+                state["stopping_reason"] = "wall_clock_limit"
+                store.event(
+                    "repair_failed",
+                    iteration=attempt["iteration"],
+                    error=execution_error,
+                )
+                attempt.update(recovery=recovery)
+                update_attempt(store, attempt)
+                break
+            except (ConnectionError, ValueError) as repair_error:
+                if isinstance(repair_error, (GenerationFailure, LLMTransportFailure)):
+                    responses.extend(repair_error.responses)
+                    add_usage(state, repair_error.responses)
+                execution_error = str(repair_error)
+                rejected = {
+                    "experiment_id": experiment_id,
+                    "source_hash": experiment.source_hash,
+                    "error": _bounded_error(execution_error),
+                    "diagnostics": {},
+                }
+                failure_history.append(rejected)
+                recovery.append(
+                    {
+                        **rejected,
+                        "action": "llm_code_repair_response_rejected",
+                    }
+                )
+                store.event(
+                    "repair_response_rejected",
+                    iteration=attempt["iteration"],
+                    repair_number=repair_requests,
+                    error=execution_error,
+                )
+                attempt.update(
+                    recovery=recovery,
+                    responses=[response_dict(response) for response in responses],
+                )
+                update_attempt(store, attempt)
+
+        if repaired_ready:
+            continue
+        if state.get("stopping_reason") != "wall_clock_limit":
             recovery.append(
                 {
+                    "experiment_id": experiment_id,
+                    "source_hash": experiment.source_hash,
                     "error": execution_error,
-                    "action": "llm_code_repair_failed_restore_previous_best",
+                    "action": "repair_request_limit_reached_restore_previous_best",
                 }
             )
             store.event(
@@ -224,9 +277,7 @@ def execute_with_repairs(
                 responses=[response_dict(response) for response in responses],
             )
             update_attempt(store, attempt)
-            if isinstance(repair_error, LLMDeadlineExceeded):
-                state["stopping_reason"] = "wall_clock_limit"
-            break
+        break
 
     return ExecutionOutcome(
         experiment=experiment,

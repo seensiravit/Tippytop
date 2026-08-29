@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from tippytop.artifacts import RunStore, read_json, read_jsonl
-from tippytop.llm import LLMResult
+from tippytop.llm import GenerationFailure, LLMResult
 from tippytop.config import RunConfig
 from tippytop.generated import GeneratedExperiment
 from tippytop.research import ResearchPlan
@@ -183,3 +183,86 @@ def test_execution_deadline_is_persisted_as_a_durable_outcome(tmp_path: Path) ->
     assert state["stopping_reason"] == "wall_clock_limit"
     inflight = read_json(tmp_path / "transactions" / "001.inflight.json")
     assert inflight["recovery"][-1]["action"] == "wall_clock_limit_restore_previous_best"
+
+
+def test_invalid_repair_response_does_not_abandon_experiment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for directory in ("checkpoints", "diffs", "transactions"):
+        (tmp_path / directory).mkdir()
+    store = RunStore(tmp_path)
+    state = {
+        "elapsed_seconds": 0.0,
+        "llm_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+    source = "def fit(train_rows, seed):\n    return 1\n\ndef predict(model, rows):\n    return [model] * len(rows)\n"
+    repaired_source = source.replace("return 1", "return 2")
+    experiment = GeneratedExperiment("Repair it", "Complete execution", source)
+    repaired = GeneratedExperiment("Repair it", "Complete execution", repaired_source)
+    plan = ResearchPlan(
+        "Repair it",
+        "Complete execution",
+        "Exercise repeated repair requests.",
+        "No prior work.",
+        (),
+        "Simple model",
+        ("Repair then execute",),
+        ("Invalid patch response",),
+    )
+    attempt = {
+        "iteration": 1,
+        "experiment_id": "iteration-001",
+        "recovery": [],
+    }
+
+    class RepairClient:
+        calls = 0
+
+        def repair(self, *_args: object, **_kwargs: object):
+            self.calls += 1
+            if self.calls == 1:
+                response = LLMResult("bad patch", {"total_tokens": 3})
+                raise GenerationFailure("constant ranker labels", [response])
+            return repaired, [LLMResult("good patch", {"total_tokens": 5})]
+
+    executions = 0
+
+    def run(*_args: object, **_kwargs: object):
+        nonlocal executions
+        executions += 1
+        if executions == 1:
+            from tippytop.runtime import ExperimentFailure
+
+            raise ExperimentFailure("unsupported fit keywords")
+        return {"valid_metrics": {"primary": 0.61}}, {"stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("tippytop.search.execution.run_experiment", run)
+    client = RepairClient()
+
+    outcome = execute_with_repairs(
+        RunConfig(),
+        store,
+        state,
+        client,  # type: ignore[arg-type]
+        {},
+        plan,
+        experiment,
+        "iteration-001",
+        {experiment.source_hash},
+        [],
+        tmp_path / "unused.pkl",
+        "revision",
+        time.monotonic() + 30,
+        time.monotonic(),
+        attempt,
+    )
+
+    assert outcome.result == {"valid_metrics": {"primary": 0.61}}
+    assert outcome.experiment.source == repaired_source
+    assert client.calls == 2
+    assert executions == 2
+    actions = [item["action"] for item in outcome.recovery]
+    assert "llm_code_repair_response_rejected" in actions
+    assert "llm_code_repair_succeeded" in actions
+    assert state["llm_usage"]["total_tokens"] == 8
