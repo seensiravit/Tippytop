@@ -8,6 +8,7 @@ from typing import Any
 from ..generated import GeneratedExperiment
 from ..research import ResearchPlan
 from ..research.contract import experiment_contract, research_environment
+from .protocol import REVIEW_CHECKS
 
 
 def research_messages(context: dict[str, Any]) -> list[dict[str, str]]:
@@ -64,6 +65,11 @@ def generation_messages(
             "role": "user",
             "content": _json(
                 {
+                    "response_schema": {
+                        "hypothesis": "implemented experiment hypothesis",
+                        "expected_effect": "expected ranking effect",
+                        "source": "complete Python module",
+                    },
                     "experiment_contract": experiment_contract(),
                     "research_plan": plan.to_dict(),
                     "research_context": context,
@@ -94,6 +100,11 @@ def repair_messages(
             "role": "user",
             "content": _json(
                 {
+                    "response_schema": {
+                        "hypothesis": "repaired experiment hypothesis",
+                        "expected_effect": "expected ranking effect",
+                        "source": "complete repaired Python module",
+                    },
                     "experiment_contract": experiment_contract(),
                     "research_plan": plan.to_dict() if plan is not None else None,
                     "research_context": context,
@@ -129,6 +140,14 @@ def review_messages(
             "role": "user",
             "content": _json(
                 {
+                    "response_schema": {
+                        "verdict": "pass or revise",
+                        "critique": "non-empty review of the final returned module",
+                        "checks": {name: True for name in REVIEW_CHECKS},
+                        "hypothesis": "final experiment hypothesis",
+                        "expected_effect": "expected ranking effect",
+                        "source": "complete final Python module",
+                    },
                     "experiment_contract": experiment_contract(),
                     "research_plan": plan.to_dict(),
                     "research_context": context,

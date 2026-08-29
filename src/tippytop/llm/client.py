@@ -235,7 +235,8 @@ class LLMClient:
                                 "role": "user",
                                 "content": (
                                     f"The review response is invalid: {review_error}. Return every "
-                                    "required field and all six checks. A revise verdict must include a substantively "
+                                    f"required field with checks exactly named {list(REVIEW_CHECKS)}. "
+                                    "A revise verdict must include a substantively "
                                     "corrected complete module; pass must preserve executable behavior."
                                 ),
                             },
