@@ -6,70 +6,27 @@ import json
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from typing import Any
 
 from .config import RunConfig
-from .experiment_contract import experiment_contract, research_environment
 from .generated import GeneratedExperiment, executable_fingerprint, parse_json_object
-from .research_plan import ResearchPlan
-
-
-REVIEW_CHECKS = (
-    "plan_fidelity",
-    "substantive_novelty",
-    "feature_path_complete",
-    "continuous_ranking_scores",
-    "leakage_safe",
-    "resource_feasible",
+from .llm_prompts import (
+    generation_messages,
+    reflection_messages,
+    repair_messages,
+    research_messages,
+    review_messages,
 )
-
-
-@dataclass(frozen=True)
-class LLMResult:
-    content: str
-    usage: dict[str, int]
-    requested_model: str = ""
-    returned_model: str = ""
-    response_id: str = ""
-    finish_reason: str = ""
-
-
-@dataclass(frozen=True)
-class ExperimentReview:
-    verdict: str
-    critique: str
-    checks: dict[str, bool]
-    experiment: GeneratedExperiment
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "verdict": self.verdict,
-            "critique": self.critique,
-            "checks": self.checks,
-            "experiment": self.experiment.to_dict(),
-            "source_hash": self.experiment.source_hash,
-        }
-
-
-class GenerationFailure(ValueError):
-    """A rejected generation together with every raw response received."""
-
-    def __init__(self, message: str, responses: list[LLMResult]):
-        super().__init__(message)
-        self.responses = responses
-
-
-class LLMTransportFailure(ConnectionError):
-    """A retryable endpoint failure that must not consume an experiment iteration."""
-
-    def __init__(self, message: str, responses: list[LLMResult]):
-        super().__init__(message)
-        self.responses = responses
-
-
-class LLMDeadlineExceeded(TimeoutError):
-    pass
+from .llm_protocol import (
+    REVIEW_CHECKS,
+    ExperimentReview,
+    GenerationFailure,
+    LLMDeadlineExceeded,
+    LLMResult,
+    LLMTransportFailure,
+    parse_review,
+)
+from .research_plan import ResearchPlan
 
 
 class LLMClient:
@@ -139,28 +96,7 @@ class LLMClient:
         *,
         deadline: float | None = None,
     ) -> tuple[GeneratedExperiment, list[LLMResult]]:
-        system = (
-            "You are the implementation engineer in an autonomous ML lab. Write the complete "
-            "experiment module for the scientist's approved plan. Implement every planned feature, "
-            "supervision signal, model component, and objective; do not simplify it into a familiar "
-            "starter model or redesign the plan. Host helpers are optional, not a prescribed architecture. "
-            "Return only one JSON object with no Markdown or commentary."
-        )
-        contract = experiment_contract()
-        messages = [
-            {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "experiment_contract": contract,
-                        "research_plan": plan.to_dict(),
-                        "research_context": context,
-                    },
-                    sort_keys=True,
-                ),
-            },
-        ]
+        messages = generation_messages(context, plan)
         responses: list[LLMResult] = []
         correction_messages = list(messages)
         last_error: Exception | None = None
@@ -204,39 +140,7 @@ class LLMClient:
     ) -> tuple[ResearchPlan, list[LLMResult]]:
         """Choose one substantive scientific direction before any code is written."""
 
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the lead scientist in an autonomous recommender-system lab. Select one "
-                    "falsifiable, resource-feasible experiment, not a list of candidates and not code. "
-                    "Escape local helper-driven variations: use the raw schema and measured failures to "
-                    "make a substantive change in representation, supervision, objective, model, or a "
-                    "combination. Explain exactly how it departs from prior work and how every training-only "
-                    "signal becomes valid prediction-time state. Return one JSON object only."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "research_plan_schema": {
-                            "hypothesis": "specific falsifiable claim",
-                            "expected_effect": "expected ranking-metric effect",
-                            "rationale": "scientific mechanism",
-                            "departure_from_prior_work": "why this is not another measured variation",
-                            "data_and_features": ["precise signal and causal construction"],
-                            "model_and_objective": "representation, learner, supervision, and objective",
-                            "implementation_outline": ["ordered executable design step"],
-                            "failure_modes": ["risk the coder and reviewer must address"],
-                        },
-                        "research_environment": research_environment(),
-                        "research_context": context,
-                    },
-                    sort_keys=True,
-                ),
-            },
-        ]
+        messages = research_messages(context)
         responses: list[LLMResult] = []
         last_error: Exception | None = None
         for correction in range(2):
@@ -280,31 +184,7 @@ class LLMClient:
         *,
         deadline: float | None = None,
     ) -> tuple[GeneratedExperiment, list[LLMResult]]:
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are repairing an ML experiment that failed in an isolated runtime. "
-                    "Return one JSON object with exactly hypothesis, expected_effect, and source. "
-                    "Preserve the research intent, fix the reported failure in executable statements, "
-                    "and include the complete Python module as the source JSON string. Comment-only "
-                    "changes are not a repair. Do not include Markdown."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "experiment_contract": experiment_contract(),
-                        "research_plan": plan.to_dict() if plan is not None else None,
-                        "research_context": context,
-                        "failed_experiment": failed.to_dict(),
-                        "runtime_error": error[-12000:],
-                    },
-                    sort_keys=True,
-                ),
-            },
-        ]
+        messages = repair_messages(context, failed, error, plan)
         responses: list[LLMResult] = []
         last_error: Exception | None = None
         failed_fingerprint = executable_fingerprint(failed.source)
@@ -353,34 +233,7 @@ class LLMClient:
     ) -> tuple[ExperimentReview, list[LLMResult]]:
         """Critique and, when needed, rewrite generated source before execution."""
 
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the independent senior reviewer in an autonomous ML research loop. "
-                    "Inspect the proposed experiment against the scientist's plan, exact runtime contract, "
-                    "and measured history. Trace every planned feature into both final fit and predict matrices; "
-                    "reject ignored/no-op features, label leakage, class-label outputs instead of "
-                    "continuous ranking scores, undertrained one-step objectives, invalid helper use, "
-                    "non-vectorized full-data code, and repeated measured dead ends. If any blocking "
-                    "issue exists, rewrite the complete module yourself. Return one JSON object only "
-                    "with verdict ('pass' or 'revise'), critique, all six boolean checks, hypothesis, "
-                    "expected_effect, and source. Every check must describe the final returned module."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "experiment_contract": experiment_contract(),
-                        "research_plan": plan.to_dict(),
-                        "research_context": context,
-                        "proposed_experiment": proposed.to_dict(),
-                    },
-                    sort_keys=True,
-                ),
-            },
-        ]
+        messages = review_messages(context, plan, proposed)
         responses: list[LLMResult] = []
         last_error: Exception | None = None
         for correction in range(2):
@@ -397,7 +250,7 @@ class LLMClient:
                 raise LLMTransportFailure(str(request_error), responses) from request_error
             responses.append(result)
             try:
-                review = _parse_review(result.content)
+                review = parse_review(result.content)
                 changed = (
                     executable_fingerprint(review.experiment.source)
                     != executable_fingerprint(proposed.source)
@@ -427,16 +280,7 @@ class LLMClient:
 
     def reflect(self, context: dict[str, Any], *, deadline: float | None = None) -> LLMResult:
         return self.complete(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an ML research agent reflecting on a measured experiment. "
-                        "State what the result supports, what failed, and the next direction in at most 180 words."
-                    ),
-                },
-                {"role": "user", "content": json.dumps(context, sort_keys=True)},
-            ],
+            reflection_messages(context),
             temperature=0.2,
             max_tokens=300,
             attempts=1,
@@ -478,30 +322,3 @@ class LLMClient:
         if remaining <= 0:
             raise LLMDeadlineExceeded("run wall-clock limit reached")
         return max(1, min(self.timeout, remaining))
-
-
-def _parse_review(content: str) -> ExperimentReview:
-    payload = parse_json_object(content)
-    expected = {"verdict", "critique", "checks", "hypothesis", "expected_effect", "source"}
-    missing = expected - set(payload)
-    unknown = set(payload) - expected
-    if missing:
-        raise ValueError(f"experiment review is missing fields: {sorted(missing)}")
-    if unknown:
-        raise ValueError(f"experiment review has unknown fields: {sorted(unknown)}")
-    verdict = payload["verdict"]
-    critique = payload["critique"]
-    if verdict not in {"pass", "revise"}:
-        raise ValueError("review verdict must be 'pass' or 'revise'")
-    if not isinstance(critique, str) or not critique.strip():
-        raise ValueError("review critique must be a non-empty string")
-    raw_checks = payload["checks"]
-    if not isinstance(raw_checks, dict) or set(raw_checks) != set(REVIEW_CHECKS):
-        raise ValueError(f"review checks must contain exactly: {list(REVIEW_CHECKS)}")
-    if any(value is not True for value in raw_checks.values()):
-        raise ValueError("every review check must pass for the final returned module")
-    checks = {name: True for name in REVIEW_CHECKS}
-    experiment = GeneratedExperiment.from_dict(
-        {key: payload[key] for key in ("hypothesis", "expected_effect", "source")}
-    )
-    return ExperimentReview(verdict, critique.strip(), checks, experiment)

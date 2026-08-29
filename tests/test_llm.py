@@ -208,6 +208,20 @@ def test_research_plan_schema_is_corrected_before_coding() -> None:
     assert len(responses) == 2
 
 
+def test_research_plan_accepts_descriptive_extras_and_scalar_feature_text() -> None:
+    payload = {
+        **PLAN_PAYLOAD,
+        "experiment_title": "A descriptive title",
+        "data_and_features": "Use causal user histories and prediction-time context.",
+    }
+
+    plan = ResearchPlan.from_dict(payload)
+
+    assert plan.data_and_features == (
+        "Use causal user histories and prediction-time context.",
+    )
+
+
 def test_review_requires_all_structured_checks() -> None:
     invalid = review_payload(REPAIRED_SOURCE)
     invalid["checks"] = {"plan_fidelity": True}

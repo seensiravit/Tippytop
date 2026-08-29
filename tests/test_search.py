@@ -7,13 +7,12 @@ import pytest
 
 from tippytop.artifacts import RunStore, read_jsonl
 from tippytop.llm import LLMResult
-from tippytop.search import (
+from tippytop.search_iteration import (
     REFLECTION_CODE_CHARS,
-    _commit_iteration,
-    _recover_transactions,
     _reflect,
     _validation_diagnostics,
 )
+from tippytop.search_journal import commit_iteration, recover_transactions
 
 
 def test_iteration_transaction_recovers_state_and_log(tmp_path: Path) -> None:
@@ -22,12 +21,12 @@ def test_iteration_transaction_recovers_state_and_log(tmp_path: Path) -> None:
     state = {"iteration": 1, "best": {"id": "new-best"}, "elapsed_seconds": 0.0}
     record = {"iteration": 1, "id": "iteration-001", "status": "completed"}
 
-    _commit_iteration(store, state, record, time.monotonic())
+    commit_iteration(store, state, record, time.monotonic())
     stale_state = {"iteration": 0, "best": {"id": "baseline"}, "elapsed_seconds": 0.0}
     store.write_json("state.json", stale_state)
 
-    _recover_transactions(store, stale_state)
-    _recover_transactions(store, stale_state)
+    recover_transactions(store, stale_state)
+    recover_transactions(store, stale_state)
 
     assert stale_state["iteration"] == 1
     assert stale_state["best"]["id"] == "new-best"
