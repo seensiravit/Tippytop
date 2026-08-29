@@ -11,10 +11,13 @@ from ..artifacts import HostRevisionChanged, RunStore, atomic_write_text
 from ..config import RunConfig
 from ..generated import GeneratedExperiment
 from ..llm import GenerationFailure, LLMClient, LLMDeadlineExceeded, LLMResult, LLMTransportFailure
+from ..llm.api_validation import validate_installed_api_calls
+from ..llm.semantic_validation import validate_prediction_paths
 from ..research import ResearchPlan
 from ..runtime import ExperimentFailure, run_experiment
+from ..runtime.diagnostics import runtime_failure_diagnostics
 from .journal import persist_state, update_attempt
-from .records import add_usage, source_diff
+from .records import add_usage, response_dict, source_diff
 
 
 MAX_RUNTIME_REPAIRS = 4
@@ -54,6 +57,7 @@ def execute_with_repairs(
     output = {"stdout": "", "stderr": ""}
     execution_error: str | None = None
     artifact_dir = store.path / "checkpoints" / experiment_id
+    failure_history = _prior_failure_history(recovery)
 
     for repair_number in range(MAX_RUNTIME_REPAIRS + 1):
         store.event(
@@ -64,6 +68,11 @@ def execute_with_repairs(
             repair_number=repair_number,
         )
         try:
+            try:
+                validate_installed_api_calls(experiment.source)
+                validate_prediction_paths(experiment.source)
+            except ValueError as error:
+                raise ExperimentFailure(str(error)) from error
             result, output = run_experiment(
                 config,
                 experiment,
@@ -85,6 +94,13 @@ def execute_with_repairs(
             break
         except ExperimentFailure as error:
             execution_error = str(error)
+            failure = {
+                "experiment_id": experiment_id,
+                "source_hash": experiment.source_hash,
+                "error": _bounded_error(execution_error),
+                "diagnostics": runtime_failure_diagnostics(experiment.source, execution_error),
+            }
+            failure_history.append(failure)
             store.event(
                 "experiment_failed",
                 iteration=attempt["iteration"],
@@ -96,15 +112,19 @@ def execute_with_repairs(
                         "experiment_id": experiment_id,
                         "source_hash": experiment.source_hash,
                         "error": execution_error,
+                        "diagnostics": failure["diagnostics"],
                         "action": "repair_limit_reached_restore_previous_best",
                     }
                 )
+                attempt.update(recovery=recovery)
+                update_attempt(store, attempt)
                 break
             recovery.append(
                 {
                     "experiment_id": experiment_id,
                     "source_hash": experiment.source_hash,
                     "error": execution_error,
+                    "diagnostics": failure["diagnostics"],
                     "action": "request_llm_code_repair",
                 }
             )
@@ -121,6 +141,21 @@ def execute_with_repairs(
             )
             persist_state(store, state, wall_started)
             raise
+        except LLMDeadlineExceeded as error:
+            execution_error = str(error)
+            recovery.append(
+                {
+                    "experiment_id": experiment_id,
+                    "source_hash": experiment.source_hash,
+                    "error": execution_error,
+                    "action": "wall_clock_limit_restore_previous_best",
+                }
+            )
+            attempt.update(recovery=recovery)
+            update_attempt(store, attempt)
+            state["stopping_reason"] = "wall_clock_limit"
+            persist_state(store, state, wall_started)
+            break
 
         try:
             store.event(
@@ -135,6 +170,7 @@ def execute_with_repairs(
                 experiment,
                 execution_error,
                 plan=research_plan,
+                failure_history=failure_history,
                 deadline=deadline,
             )
             responses.extend(repair_responses)
@@ -163,6 +199,8 @@ def execute_with_repairs(
                 source_hash=experiment.source_hash,
                 source_hashes=sorted(used_hashes),
                 recovery=recovery,
+                experiment=experiment.to_dict(),
+                responses=[response_dict(response) for response in responses],
             )
             update_attempt(store, attempt)
         except (ConnectionError, ValueError, LLMDeadlineExceeded) as repair_error:
@@ -181,6 +219,11 @@ def execute_with_repairs(
                 iteration=attempt["iteration"],
                 error=execution_error,
             )
+            attempt.update(
+                recovery=recovery,
+                responses=[response_dict(response) for response in responses],
+            )
+            update_attempt(store, attempt)
             if isinstance(repair_error, LLMDeadlineExceeded):
                 state["stopping_reason"] = "wall_clock_limit"
             break
@@ -201,3 +244,24 @@ def _remaining_timeout(deadline: float) -> int:
     if remaining <= 0:
         raise LLMDeadlineExceeded("run wall-clock limit reached")
     return remaining
+
+
+def _prior_failure_history(recovery: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "experiment_id": item.get("experiment_id"),
+            "source_hash": item.get("source_hash"),
+            "error": _bounded_error(str(item["error"])),
+            "diagnostics": item.get("diagnostics", {}),
+        }
+        for item in recovery
+        if item.get("error") and item.get("source_hash")
+    ]
+
+
+def _bounded_error(error: str, limit: int = 1200) -> str:
+    if len(error) <= limit:
+        return error
+    prefix = error[:300]
+    suffix = error[-(limit - len(prefix) - 40) :]
+    return f"{prefix}\n... traceback truncated ...\n{suffix}"

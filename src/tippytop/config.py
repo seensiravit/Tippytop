@@ -26,7 +26,7 @@ class RunConfig:
     patience: int = 3
     seed: int = 0
     experiment_timeout: int = 1800
-    llm_timeout: int = 300
+    llm_timeout: int = 600
     offline: bool = False
 
     @classmethod

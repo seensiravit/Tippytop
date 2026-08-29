@@ -41,6 +41,10 @@ def test_context_includes_bounded_recent_source_and_diagnostics(tmp_path) -> Non
                     {
                         "action": "request_llm_code_repair",
                         "error": "traceback " + ("e" * 10_000),
+                        "diagnostics": {
+                            "unexpected_keyword": "objective",
+                            "required_action": "move estimator options into the constructor",
+                        },
                     }
                 ],
                 "test_secret": "MUST_NOT_LEAK",
@@ -66,6 +70,8 @@ def test_context_includes_bounded_recent_source_and_diagnostics(tmp_path) -> Non
     assert len(context["recent_code_attempts"][-1]["source"]) == SOURCE_CONTEXT_CHARS
     rendered = json.dumps(context)
     assert "request_llm_code_repair" in rendered
+    assert "unexpected_keyword" in rendered
+    assert "move estimator options into the constructor" in rendered
     assert "MUST_NOT_LEAK" not in rendered
     assert "test_metrics" not in rendered
 

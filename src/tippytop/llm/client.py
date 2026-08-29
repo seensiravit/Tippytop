@@ -8,23 +8,25 @@ from typing import Any
 from ..config import RunConfig
 from ..generated import GeneratedExperiment, executable_fingerprint, parse_json_object
 from ..research import ResearchPlan
+from .api_validation import validate_installed_api_calls
 from .prompts import (
     generation_messages,
     reflection_messages,
     repair_messages,
     research_messages,
-    review_messages,
 )
+from .patches import apply_repair_payload
 from .protocol import (
-    REVIEW_CHECKS,
-    ExperimentReview,
     GenerationFailure,
     LLMDeadlineExceeded,
     LLMResult,
     LLMTransportFailure,
-    parse_review,
 )
+from .semantic_validation import validate_prediction_paths
 from .transport import OpenAITransport
+
+
+REPAIR_MAX_TOKENS = 7000
 
 
 class LLMClient:
@@ -146,19 +148,20 @@ class LLMClient:
         failed: GeneratedExperiment,
         error: str,
         plan: ResearchPlan | None = None,
+        failure_history: list[dict[str, Any]] | None = None,
         *,
         deadline: float | None = None,
     ) -> tuple[GeneratedExperiment, list[LLMResult]]:
-        messages = repair_messages(context, failed, error, plan)
+        messages = repair_messages(context, failed, error, plan, failure_history)
         responses: list[LLMResult] = []
         last_error: Exception | None = None
         failed_fingerprint = executable_fingerprint(failed.source)
-        for correction in range(2):
+        for correction in range(3):
             try:
                 result = self.complete(
                     messages,
                     temperature=0.0,
-                    max_tokens=6500,
+                    max_tokens=REPAIR_MAX_TOKENS,
                     attempts=1,
                     json_mode=True,
                     timeout=self._deadline_timeout(deadline),
@@ -167,77 +170,24 @@ class LLMClient:
                 raise LLMTransportFailure(str(request_error), responses) from request_error
             responses.append(result)
             try:
-                repaired = GeneratedExperiment.from_dict(parse_json_object(result.content))
+                repaired = apply_repair_payload(failed, parse_json_object(result.content))
+                validate_installed_api_calls(repaired.source)
+                validate_prediction_paths(repaired.source)
                 if executable_fingerprint(repaired.source) == failed_fingerprint:
                     raise ValueError("repair did not change executable code")
                 return repaired, responses
             except ValueError as repair_error:
                 last_error = repair_error
-                if correction == 0:
+                if correction < 2:
                     messages.extend(
                         [
                             {"role": "assistant", "content": result.content},
                             {
                                 "role": "user",
                                 "content": (
-                                    f"The repair is still invalid: {repair_error}. Return a complete "
-                                    "corrected module that changes the failing executable statements."
-                                ),
-                            },
-                        ]
-                    )
-        raise GenerationFailure(str(last_error), responses) from last_error
-
-    def review(
-        self,
-        context: dict[str, Any],
-        plan: ResearchPlan,
-        proposed: GeneratedExperiment,
-        *,
-        deadline: float | None = None,
-    ) -> tuple[ExperimentReview, list[LLMResult]]:
-        """Critique and, when needed, rewrite generated source before execution."""
-
-        messages = review_messages(context, plan, proposed)
-        responses: list[LLMResult] = []
-        last_error: Exception | None = None
-        for correction in range(2):
-            try:
-                result = self.complete(
-                    messages,
-                    temperature=0.1 if correction == 0 else 0.0,
-                    max_tokens=6500,
-                    attempts=1,
-                    json_mode=True,
-                    timeout=self._deadline_timeout(deadline),
-                )
-            except ConnectionError as request_error:
-                raise LLMTransportFailure(str(request_error), responses) from request_error
-            responses.append(result)
-            try:
-                review = parse_review(result.content)
-                changed = (
-                    executable_fingerprint(review.experiment.source)
-                    != executable_fingerprint(proposed.source)
-                )
-                if review.verdict == "revise" and not changed:
-                    raise ValueError("review requested revision but did not change executable code")
-                if review.verdict == "pass" and changed:
-                    raise ValueError("review changed executable code but used a pass verdict")
-                return review, responses
-            except ValueError as review_error:
-                last_error = review_error
-                if correction == 0:
-                    messages.extend(
-                        [
-                            {"role": "assistant", "content": result.content},
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"The review response is invalid: {review_error}. Return every "
-                                    f"required field with checks exactly named {list(REVIEW_CHECKS)}. "
-                                    "A revise verdict must include a substantively "
-                                    "corrected complete module; pass must preserve executable behavior."
+                                    f"The repair is still invalid: {repair_error}. Return a replacement "
+                                    "edits array applied to the original failed source. Fix every listed "
+                                    "API mismatch together using exact unique substrings."
                                 ),
                             },
                         ]

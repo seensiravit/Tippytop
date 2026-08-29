@@ -101,6 +101,10 @@ def recover_inflight_attempts(
             "became_best": False,
             "manual_interventions": state.get("manual_interventions", 0),
             "recovery": attempt.get("recovery", []),
+            "research_plan": attempt.get("research_plan"),
+            "research_responses": attempt.get("research_responses", []),
+            "responses": attempt.get("responses", []),
+            "executed_experiment": attempt.get("experiment"),
         }
         commit_iteration(store, state, record, wall_started)
         path.unlink(missing_ok=True)

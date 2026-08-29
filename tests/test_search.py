@@ -5,14 +5,23 @@ from pathlib import Path
 
 import pytest
 
-from tippytop.artifacts import RunStore, read_jsonl
+from tippytop.artifacts import RunStore, read_json, read_jsonl
 from tippytop.llm import LLMResult
+from tippytop.config import RunConfig
+from tippytop.generated import GeneratedExperiment
+from tippytop.research import ResearchPlan
+from tippytop.search.execution import execute_with_repairs
 from tippytop.search.records import (
     REFLECTION_CODE_CHARS,
     reflect,
     validation_diagnostics,
 )
-from tippytop.search.journal import commit_iteration, recover_transactions
+from tippytop.search.journal import (
+    begin_attempt,
+    commit_iteration,
+    recover_inflight_attempts,
+    recover_transactions,
+)
 
 
 def test_iteration_transaction_recovers_state_and_log(tmp_path: Path) -> None:
@@ -31,6 +40,47 @@ def test_iteration_transaction_recovers_state_and_log(tmp_path: Path) -> None:
     assert stale_state["iteration"] == 1
     assert stale_state["best"]["id"] == "new-best"
     assert read_jsonl(tmp_path / "iterations.jsonl") == [record]
+
+
+def test_interrupted_repair_preserves_exact_source_and_responses(tmp_path: Path) -> None:
+    (tmp_path / "transactions").mkdir()
+    (tmp_path / "experiments").mkdir()
+    store = RunStore(tmp_path)
+    source = "def fit(train_rows, seed):\n    return 1\n\ndef predict(model, rows):\n    return [model] * len(rows)\n"
+    attempt = {
+        "iteration": 1,
+        "experiment_id": "iteration-001-repair-1",
+        "parent_id": "baseline-fm",
+        "hypothesis": "Repair the generated model.",
+        "expected_effect": "Complete execution.",
+        "source_hash": "repaired-hash",
+        "source_hashes": ["initial-hash", "repaired-hash"],
+        "source_revision": "revision",
+        "started_at": "2026-01-01T00:00:00Z",
+        "research_plan": {"hypothesis": "plan"},
+        "research_responses": [{"content": "plan response"}],
+        "responses": [{"content": "repair response"}],
+        "experiment": {
+            "hypothesis": "Repair the generated model.",
+            "expected_effect": "Complete execution.",
+            "source": source,
+        },
+        "recovery": [{"action": "request_llm_code_repair"}],
+    }
+    begin_attempt(store, attempt)
+    state = {
+        "iteration": 0,
+        "used_source_hashes": [],
+        "manual_interventions": 0,
+        "elapsed_seconds": 0.0,
+    }
+
+    recover_inflight_attempts(store, state, time.monotonic())
+
+    record = read_json(tmp_path / "transactions" / "001.json")["record"]
+    assert record["executed_experiment"]["source"] == source
+    assert record["responses"] == [{"content": "repair response"}]
+    assert state["used_source_hashes"] == ["initial-hash", "repaired-hash"]
 
 
 def test_reflection_bounds_generated_code_diff(tmp_path: Path) -> None:
@@ -83,3 +133,53 @@ def test_validation_diagnostics_identify_repeated_outcome() -> None:
     assert diagnostics["matching_prior_iteration"] == 2
     assert diagnostics["primary_delta_from_baseline"] == pytest.approx(-0.01)
     assert diagnostics["primary_delta_from_previous_best"] == pytest.approx(-0.01)
+
+
+def test_execution_deadline_is_persisted_as_a_durable_outcome(tmp_path: Path) -> None:
+    for directory in ("checkpoints", "diffs", "transactions"):
+        (tmp_path / directory).mkdir()
+    store = RunStore(tmp_path)
+    state = {"elapsed_seconds": 0.0}
+    experiment = GeneratedExperiment(
+        "Test deadline routing",
+        "Stop without losing state",
+        "def fit(train_rows, seed):\n    return 1\n\ndef predict(model, rows):\n    return [model] * len(rows)\n",
+    )
+    plan = ResearchPlan(
+        "Test deadline routing",
+        "Stop without losing state",
+        "Exercise the deadline branch.",
+        "No prior work.",
+        (),
+        "Constant smoke model",
+        ("Attempt execution",),
+        ("Deadline expires",),
+    )
+    attempt = {
+        "iteration": 1,
+        "experiment_id": "iteration-001",
+        "recovery": [],
+    }
+
+    outcome = execute_with_repairs(
+        RunConfig(),
+        store,
+        state,
+        object(),  # type: ignore[arg-type]
+        {},
+        plan,
+        experiment,
+        "iteration-001",
+        {experiment.source_hash},
+        [],
+        tmp_path / "unused.pkl",
+        "revision",
+        time.monotonic() - 1,
+        time.monotonic(),
+        attempt,
+    )
+
+    assert outcome.result is None
+    assert state["stopping_reason"] == "wall_clock_limit"
+    inflight = read_json(tmp_path / "transactions" / "001.inflight.json")
+    assert inflight["recovery"][-1]["action"] == "wall_clock_limit_restore_previous_best"

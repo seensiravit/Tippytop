@@ -29,3 +29,9 @@ def test_runtime_limits_can_be_set_for_run_and_resume() -> None:
     assert resume.max_hours == 4
     assert resume.experiment_timeout == 900
     assert resume.llm_timeout == 450
+
+
+def test_run_uses_slow_local_model_timeout_by_default() -> None:
+    arguments = build_parser().parse_args(["run"])
+
+    assert arguments.llm_timeout == 600

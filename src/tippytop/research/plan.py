@@ -20,6 +20,9 @@ class ResearchPlan:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ResearchPlan:
+        if not isinstance(payload, dict):
+            raise ValueError("research plan must be an object")
+
         expected = {
             "hypothesis",
             "expected_effect",
@@ -29,6 +32,7 @@ class ResearchPlan:
             "implementation_outline",
             "failure_modes",
         }
+        payload = _unwrap_plan(payload, expected)
         missing = expected - set(payload)
         if missing:
             raise ValueError(f"research plan is missing fields: {sorted(missing)}")
@@ -54,10 +58,11 @@ class ResearchPlan:
             name: _string_tuple(payload[name], name)
             for name in ("implementation_outline", "failure_modes")
         }
+        data_and_features = payload.get("data_and_features")
         lists["data_and_features"] = (
-            _string_tuple(payload["data_and_features"], "data_and_features")
-            if "data_and_features" in payload
-            else ()
+            ()
+            if data_and_features in (None, [])
+            else _string_tuple(data_and_features, "data_and_features")
         )
         return cls(**scalars, **lists)
 
@@ -82,3 +87,19 @@ def _string_tuple(value: Any, name: str) -> tuple[str, ...]:
     if any(not isinstance(item, str) or not item.strip() for item in value):
         raise ValueError(f"research plan field {name!r} must contain non-empty strings")
     return tuple(item.strip() for item in value)
+
+
+def _unwrap_plan(payload: dict[str, Any], expected: set[str]) -> dict[str, Any]:
+    """Accept harmless response envelopes without weakening the plan itself."""
+
+    if expected <= set(payload):
+        return payload
+    for key in ("research_plan", "experiment_plan", "plan"):
+        nested = payload.get(key)
+        if isinstance(nested, dict) and expected <= set(nested):
+            return nested
+    if len(payload) == 1:
+        nested = next(iter(payload.values()))
+        if isinstance(nested, dict) and expected <= set(nested):
+            return nested
+    return payload

@@ -6,7 +6,8 @@ import pytest
 
 from tippytop.config import RunConfig
 from tippytop.generated import GeneratedExperiment
-from tippytop.llm import REVIEW_CHECKS, GenerationFailure, LLMClient, LLMResult, LLMTransportFailure
+from tippytop.llm import GenerationFailure, LLMClient, LLMResult, LLMTransportFailure
+from tippytop.llm.prompts import repair_messages
 from tippytop.research import ResearchPlan
 
 
@@ -35,17 +36,6 @@ PLAN_PAYLOAD = {
     "failure_modes": ["Prevent leakage and class-label outputs."],
 }
 PLAN = ResearchPlan.from_dict(PLAN_PAYLOAD)
-
-
-def review_payload(source: str, *, verdict: str = "revise") -> dict[str, object]:
-    return {
-        "verdict": verdict,
-        "critique": "The final module faithfully implements the plan and returns continuous scores.",
-        "checks": {name: True for name in REVIEW_CHECKS},
-        "hypothesis": "Produce a nonconstant score using the available rows.",
-        "expected_effect": "Improve within-user ordering.",
-        "source": source,
-    }
 
 
 class FakeClient(LLMClient):
@@ -98,19 +88,27 @@ def test_rejected_correction_preserves_raw_responses() -> None:
 
 
 def test_runtime_repair_returns_new_source() -> None:
-    repaired = {
+    failed = {
         "hypothesis": "Repair a failed prior model.",
         "expected_effect": "Run without the reported exception.",
-        "source": REPAIRED_SOURCE,
+        "source": SOURCE,
     }
-    client = FakeClient([json.dumps(repaired)])
+    patch = {
+        "edits": [
+            {
+                "old": "return np.full(len(rows), model, dtype=np.float32)",
+                "new": "return np.full(len(rows), float(model), dtype=np.float32)",
+            }
+        ]
+    }
+    client = FakeClient([json.dumps(patch)])
     experiment, responses = client.repair(
         {"best": 0.6},
-        GeneratedExperiment.from_dict({**repaired, "source": SOURCE}),
+        GeneratedExperiment.from_dict(failed),
         "ValueError: failed",
         plan=PLAN,
     )
-    assert experiment.hypothesis == repaired["hypothesis"]
+    assert experiment.source == REPAIRED_SOURCE
     assert len(responses) == 1
 
 
@@ -120,7 +118,7 @@ def test_rejected_runtime_repair_preserves_raw_response() -> None:
         "expected_effect": "Run without the reported exception.",
         "source": SOURCE,
     }
-    client = FakeClient(["not json", "still not json"])
+    client = FakeClient(["not json", "still not json", "also not json"])
     with pytest.raises(GenerationFailure) as captured:
         client.repair(
             {"best": 0.6},
@@ -132,6 +130,7 @@ def test_rejected_runtime_repair_preserves_raw_response() -> None:
     assert [response.content for response in captured.value.responses] == [
         "not json",
         "still not json",
+        "also not json",
     ]
 
 
@@ -141,8 +140,15 @@ def test_comment_only_runtime_repair_is_corrected() -> None:
         "expected_effect": "Run without the reported exception.",
         "source": SOURCE,
     }
-    comment_only = {**failed, "source": SOURCE + "\n# claimed repair\n"}
-    executable_repair = {**failed, "source": REPAIRED_SOURCE}
+    comment_only = {"edits": [{"old": SOURCE, "new": SOURCE + "\n# claimed repair\n"}]}
+    executable_repair = {
+        "edits": [
+            {
+                "old": "return np.full(len(rows), model, dtype=np.float32)",
+                "new": "return np.full(len(rows), float(model), dtype=np.float32)",
+            }
+        ]
+    }
     client = FakeClient([json.dumps(comment_only), json.dumps(executable_repair)])
 
     experiment, responses = client.repair(
@@ -153,49 +159,6 @@ def test_comment_only_runtime_repair_is_corrected() -> None:
     )
 
     assert experiment.source == REPAIRED_SOURCE
-    assert len(responses) == 2
-
-
-def test_pre_execution_review_rewrites_blocking_source() -> None:
-    revised = review_payload(REPAIRED_SOURCE)
-    client = FakeClient([json.dumps(revised)])
-
-    review, responses = client.review(
-        {"baseline_validation": {"primary": 0.6}},
-        PLAN,
-        GeneratedExperiment.from_dict(
-            {
-                "hypothesis": "Use a constant prior.",
-                "expected_effect": "Establish a control.",
-                "source": SOURCE,
-            }
-        ),
-    )
-
-    assert review.verdict == "revise"
-    assert review.experiment.source == REPAIRED_SOURCE
-    assert len(responses) == 1
-
-
-def test_pre_execution_review_rejects_comment_only_revision() -> None:
-    proposed = GeneratedExperiment.from_dict(
-        {
-            "hypothesis": "Use a constant prior.",
-            "expected_effect": "Establish a control.",
-            "source": SOURCE,
-        }
-    )
-    comment_only = {
-        **review_payload(SOURCE + "\n# reviewed\n"),
-        "hypothesis": proposed.hypothesis,
-        "expected_effect": proposed.expected_effect,
-    }
-    corrected = {**comment_only, "source": REPAIRED_SOURCE}
-    client = FakeClient([json.dumps(comment_only), json.dumps(corrected)])
-
-    review, responses = client.review({}, PLAN, proposed)
-
-    assert review.experiment.source == REPAIRED_SOURCE
     assert len(responses) == 2
 
 
@@ -224,19 +187,95 @@ def test_research_plan_accepts_descriptive_extras_and_scalar_feature_text() -> N
     assert plan.model_and_objective == '{"model": "ranker", "objective": "pairwise"}'
 
 
-def test_review_requires_all_structured_checks() -> None:
-    invalid = review_payload(REPAIRED_SOURCE)
-    invalid["checks"] = {"plan_fidelity": True}
-    client = FakeClient([json.dumps(invalid), json.dumps(review_payload(REPAIRED_SOURCE))])
-    proposed = GeneratedExperiment.from_dict(
+@pytest.mark.parametrize("wrapper", ["research_plan", "experiment_plan", "plan"])
+def test_research_plan_accepts_common_response_envelopes(wrapper: str) -> None:
+    assert ResearchPlan.from_dict({wrapper: PLAN_PAYLOAD}) == PLAN
+
+
+def test_research_plan_round_trips_without_optional_feature_notes() -> None:
+    payload = {**PLAN_PAYLOAD, "data_and_features": []}
+    plan = ResearchPlan.from_dict(payload)
+
+    assert plan.data_and_features == ()
+    assert ResearchPlan.from_dict(plan.to_dict()) == plan
+
+
+def test_runtime_repair_receives_cumulative_failures() -> None:
+    failed = {
+        "hypothesis": "Repair all invalid fit arguments.",
+        "expected_effect": "Complete smoke execution.",
+        "source": SOURCE,
+    }
+    repaired = {
+        "edits": [
+            {
+                "old": "return np.full(len(rows), model, dtype=np.float32)",
+                "new": "return np.full(len(rows), float(model), dtype=np.float32)",
+            }
+        ]
+    }
+    history = [
         {
-            "hypothesis": "Use a constant prior.",
-            "expected_effect": "Establish a control.",
-            "source": SOURCE,
-        }
+            "source_hash": "first",
+            "error": "unexpected keyword objective",
+            "diagnostics": {
+                "unexpected_keyword": "objective",
+                "installed_signatures": {"fit": "fit(X, y)"},
+            },
+        },
+        {
+            "source_hash": "second",
+            "error": "unexpected keyword metric",
+            "diagnostics": {"unexpected_keyword": "metric"},
+        },
+    ]
+    client = FakeClient([json.dumps(repaired)])
+
+    client.repair(
+        {},
+        GeneratedExperiment.from_dict(failed),
+        history[-1]["error"],
+        plan=PLAN,
+        failure_history=history,
     )
 
-    review, responses = client.review({}, PLAN, proposed)
+    messages = client.calls[0][0][0]
+    payload = json.loads(messages[1]["content"])
+    failures = payload["cumulative_runtime_failures"]
+    assert [item["source_hash"] for item in failures] == ["first", "second"]
+    assert failures[-1]["diagnostics"] == history[-1]["diagnostics"]
+    assert failures[0]["diagnostics"]["installed_signatures"] == {"fit": "fit(X, y)"}
+    assert "source" not in payload["failed_experiment"]
+    assert payload["failed_source_excerpts"]
 
-    assert all(review.checks.values())
-    assert len(responses) == 2
+
+def test_stateful_repair_excerpts_include_fit_and_predict() -> None:
+    source = """class StatefulModel:
+    def __init__(self):
+        self.mapping = None
+
+    def fit(self, train_rows):
+        self.mapping = {"known": 1.0}
+        return self
+
+    def predict(self, rows):
+        return rows["missing"].map(self.mapping)
+
+def fit(train_rows, seed):
+    return StatefulModel().fit(train_rows)
+
+def predict(model, rows):
+    return model.predict(rows)
+"""
+    experiment = GeneratedExperiment("Persist state", "Complete replay", source)
+    messages = repair_messages(
+        {},
+        experiment,
+        'File "experiment.py", line 10, in predict\nKeyError: missing',
+        PLAN,
+    )
+
+    payload = json.loads(messages[1]["content"])
+    excerpts = "\n".join(item["source"] for item in payload["failed_source_excerpts"])
+    assert "self.mapping = {\"known\": 1.0}" in excerpts
+    assert "return model.predict(rows)" in excerpts

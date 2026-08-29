@@ -114,7 +114,6 @@ def run_iteration(
             research_plan,
             research_responses,
             responses,
-            [],
             state,
         )
         state["iteration"] = iteration
@@ -156,6 +155,9 @@ def run_iteration(
         "source_revision": expected_revision,
         "started_at": started_at,
         "recovery": recovery,
+        "experiment": experiment.to_dict(),
+        "research_responses": [_response_dict(response) for response in research_responses],
+        "responses": [_response_dict(response) for response in responses],
     }
     _begin_attempt(store, attempt)
     outcome = execute_with_repairs(

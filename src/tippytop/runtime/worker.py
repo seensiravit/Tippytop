@@ -135,7 +135,11 @@ def _run_generated_smoke(request: dict[str, Any]) -> dict[str, Any]:
     model, _ = _split_model_metadata(module.fit(sample, seed))
     _validated_ranking_scores(module.predict(model, prediction_rows), len(prediction_rows))
     print(f"generated smoke rows={sample_size} predictions={len(prediction_rows)}", flush=True)
-    return {"train_rows": sample_size, "prediction_rows": len(prediction_rows)}
+    return {
+        "train_rows": sample_size,
+        "available_train_rows": len(train_rows),
+        "prediction_rows": len(prediction_rows),
+    }
 
 
 def _run_generated_predict(request: dict[str, Any]) -> dict[str, Any]:

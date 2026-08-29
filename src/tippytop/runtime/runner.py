@@ -105,6 +105,7 @@ def _run_experiment(
     atomic_write_json(smoke_request_path, {**request, "mode": "generated_smoke"})
     execution_timeout = min(config.experiment_timeout, timeout or config.experiment_timeout)
     deadline = time.monotonic() + execution_timeout
+    smoke_started = time.monotonic()
     try:
         smoke = run_worker_sandboxed(
             smoke_request_path,
@@ -115,8 +116,22 @@ def _run_experiment(
         )
     except SandboxFailure as error:
         raise ExperimentFailure(f"generated smoke check failed: {error}") from error
+    smoke_duration = time.monotonic() - smoke_started
     smoke_output = {"stdout": smoke.stdout, "stderr": smoke.stderr}
-    _validated_result(smoke.returncode, smoke_result_path, smoke_output)
+    smoke_result, _ = _validated_result(smoke.returncode, smoke_result_path, smoke_output)
+    projected_seconds = _projected_full_seconds(
+        smoke_duration,
+        int(smoke_result.get("train_rows", 0)),
+        int(smoke_result.get("available_train_rows", 0)),
+    )
+    remaining_seconds = _remaining_seconds(deadline)
+    if smoke_duration >= 15 and projected_seconds > remaining_seconds:
+        raise ExperimentFailure(
+            "generated smoke fit is not full-data feasible: "
+            f"{smoke_duration:.1f}s for {smoke_result.get('train_rows')} sampled rows projects to "
+            f"at least {projected_seconds:.1f}s for {smoke_result.get('available_train_rows')} rows, "
+            f"exceeding the remaining {remaining_seconds}s experiment budget"
+        )
     if source_path.read_text(encoding="utf-8") != experiment.source:
         raise ExperimentFailure("generated experiment modified its persisted source during smoke")
     if expected_source_revision is not None:
@@ -280,3 +295,13 @@ def _score_diagnostics(scores: np.ndarray) -> dict[str, int | float]:
         "minimum": float(np.min(scores)),
         "maximum": float(np.max(scores)),
     }
+
+
+def _projected_full_seconds(smoke_seconds: float, sample_rows: int, full_rows: int) -> float:
+    """Use linear scaling as a conservative lower bound for full-data fit time."""
+
+    if smoke_seconds <= 0 or sample_rows <= 0 or full_rows <= sample_rows:
+        return max(0.0, smoke_seconds)
+    startup_allowance = min(5.0, smoke_seconds)
+    fit_seconds = smoke_seconds - startup_allowance
+    return startup_allowance + fit_seconds * (full_rows / sample_rows)

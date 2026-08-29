@@ -29,6 +29,7 @@ RECENT_OUTCOME_LIMIT = 6
 RECENT_CODE_LIMIT = 2
 SOURCE_CONTEXT_CHARS = 7_000
 ERROR_CONTEXT_CHARS = 2_000
+RECOVERY_CONTEXT_LIMIT = 5
 
 
 def random_sanity(splits: dict[str, list[tuple[Any, ...]]]) -> dict[str, dict[str, float]]:
@@ -200,10 +201,16 @@ def _recent_code_attempts(
                             if key == "error" and item.get(key)
                             else item.get(key)
                         )
-                        for key in ("action", "experiment_id", "source_hash", "error")
+                        for key in (
+                            "action",
+                            "experiment_id",
+                            "source_hash",
+                            "error",
+                            "diagnostics",
+                        )
                         if item.get(key) is not None
                     }
-                    for item in recovery[-3:]
+                    for item in recovery[-RECOVERY_CONTEXT_LIMIT:]
                     if isinstance(item, dict)
                 ],
             }
@@ -217,7 +224,8 @@ def _recorded_experiment(
     record: dict[str, Any],
 ) -> dict[str, Any]:
     persisted = (
-        artifact.get("executed_experiment")
+        record.get("executed_experiment")
+        or artifact.get("executed_experiment")
         or artifact.get("experiment")
         or artifact.get("initial_experiment")
     )

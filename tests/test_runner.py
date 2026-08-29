@@ -14,6 +14,7 @@ from tippytop.doctor import run_doctor
 from tippytop.experiments import predict_checkpoint
 from tippytop.generated import GeneratedExperiment
 from tippytop.runtime import ExperimentFailure, SandboxFailure, prepare_research_data, run_experiment
+from tippytop.runtime.runner import _projected_full_seconds
 from tippytop.starter import load_splits
 
 
@@ -30,6 +31,11 @@ def predict(model, rows):
         raise ValueError("prediction rows must not contain outcomes")
     return rows["video_id"].map(model["rates"]).fillna(model["global_mean"]).to_numpy(np.float32)
 """
+
+
+def test_smoke_projection_allows_startup_but_scales_fit_work() -> None:
+    assert _projected_full_seconds(4.0, 10_000, 1_000_000) == 4.0
+    assert _projected_full_seconds(20.0, 10_000, 1_000_000) == pytest.approx(1505.0)
 
 TABULAR_SOURCE = """from sklearn.ensemble import HistGradientBoostingClassifier
 from tippytop.research import TabularEncoder, labels

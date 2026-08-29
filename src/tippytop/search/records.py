@@ -41,7 +41,6 @@ def generation_failure_record(
     research_plan: ResearchPlan | None,
     research_responses: Sequence[LLMResult],
     responses: Sequence[LLMResult],
-    review_responses: Sequence[LLMResult],
     state: dict[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -56,7 +55,6 @@ def generation_failure_record(
         "research_plan": research_plan.to_dict() if research_plan is not None else None,
         "research_responses": [response_dict(response) for response in research_responses],
         "responses": [response_dict(response) for response in responses],
-        "review_responses": [response_dict(response) for response in review_responses],
         "manual_interventions": state["manual_interventions"],
     }
 

@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--patience", type=int, default=3)
     run.add_argument("--seed", type=int, default=0)
     run.add_argument("--experiment-timeout", type=int, default=1800)
-    run.add_argument("--llm-timeout", type=int, default=300)
+    run.add_argument("--llm-timeout", type=int, default=600)
     run.add_argument(
         "--offline",
         action="store_true",
