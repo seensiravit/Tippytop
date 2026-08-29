@@ -1,13 +1,41 @@
+# Data — downloaded separately (~280 MB), never commit.
+# ./KuaiRand-Pure is normally a junction to wherever the archive was unpacked.
 KuaiRand-Pure/
 KuaiRand-Pure.tar.gz
-run.log
-submission*.csv
-__pycache__/
-*.pyc
+
+# Secrets — never commit API keys
 .env
+.env.*
+!.env.example
+
+# Agent run artifacts (autoresearch_lg)
+runs/
+run.log
+results.tsv
+concepts.json
+checkpoints.db
+.autoresearch_start_time
 autoresearch_lg_graph.mmd
 results_dashboard.html
 .langgraph_api/
+
+# Generated submissions (keep the directory, not the files)
+submission*.csv
+results/submissions/*.csv
+results/runs/
+
+# Python
+__pycache__/
+*.py[cod]
 .venv/
+venv/
+env/
 *.egg-info/
-runs/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
