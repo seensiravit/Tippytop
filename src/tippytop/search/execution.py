@@ -17,7 +17,7 @@ from .journal import persist_state, update_attempt
 from .records import add_usage, source_diff
 
 
-MAX_RUNTIME_REPAIRS = 2
+MAX_RUNTIME_REPAIRS = 4
 
 
 @dataclass(frozen=True)

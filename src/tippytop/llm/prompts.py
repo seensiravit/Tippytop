@@ -80,7 +80,7 @@ def generation_messages(
 
 
 def repair_messages(
-    context: dict[str, Any],
+    _context: dict[str, Any],
     failed: GeneratedExperiment,
     error: str,
     plan: ResearchPlan | None,
@@ -91,9 +91,12 @@ def repair_messages(
             "content": (
                 "You are repairing an ML experiment that failed in an isolated runtime. "
                 "Return one JSON object with exactly hypothesis, expected_effect, and source. "
-                "Preserve the research intent, fix the reported failure in executable statements, "
+                "Make the smallest executable correction that fixes the exact traceback; do not "
+                "redesign the model or introduce unrelated changes. Preserve the research intent, "
                 "and include the complete Python module as the source JSON string. Comment-only "
-                "changes are not a repair. Do not include Markdown."
+                "changes are not a repair. Estimator hyperparameters such as objective, metric, "
+                "n_estimators, and learning_rate belong in the estimator constructor or training "
+                "parameter dictionary, not a scikit-learn estimator's fit call. Do not include Markdown."
             ),
         },
         {
@@ -107,7 +110,6 @@ def repair_messages(
                     },
                     "experiment_contract": experiment_contract(),
                     "research_plan": plan.to_dict() if plan is not None else None,
-                    "research_context": context,
                     "failed_experiment": failed.to_dict(),
                     "runtime_error": error[-12000:],
                 }
