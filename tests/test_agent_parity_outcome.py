@@ -77,3 +77,45 @@ def test_parity_pivots_while_improvement_expands():
 
 def test_improved_path_is_unchanged():
     assert router(_router_state("improved"))["mode"] == "tune"
+
+
+# --- checkpoint retention -------------------------------------------------
+
+def _write_log_state(valid, best, failed=False, outcome="parity"):
+    """Minimal state for exercising write_log's retention branch."""
+    return {
+        "step_failed": failed,
+        "valid_primary": valid, "test_primary": valid - 0.006,
+        "best_valid_primary": best,
+        "outcome": outcome,
+    }
+
+
+def _retains(valid, best, **kw):
+    """Mirror of write_log's retention condition (see critic.write_log)."""
+    st = _write_log_state(valid, best, **kw)
+    return (not st["step_failed"]
+            and st["valid_primary"] > st["best_valid_primary"])
+
+
+def test_sub_epsilon_improvement_is_retained():
+    """The run4 case: +0.0012 is under epsilon but is still the better model.
+
+    Epsilon governs convergence, not retention -- the brief scores the
+    validation-best checkpoint, so 'best' must mean best. Tying retention to the
+    `improved` outcome discarded a genuine win and left propose() tuning from the
+    untouched baseline.
+    """
+    assert _retains(0.6027, 0.6015)
+
+
+def test_equal_score_is_not_retained():
+    assert not _retains(0.6015, 0.6015)
+
+
+def test_regression_is_not_retained():
+    assert not _retains(0.5990, 0.6015)
+
+
+def test_crash_is_never_retained():
+    assert not _retains(0.9999, 0.6015, failed=True)

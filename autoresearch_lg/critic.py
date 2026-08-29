@@ -24,7 +24,10 @@ from langgraph.graph import END, StateGraph
 from . import dashboard, tools
 from .state import ResearchState
 
-_OUTCOME_TO_STATUS = {"improved": "keep", "parity": "discard",
+# results.tsv status. Note this is a LABEL for the run log, not the retention
+# decision — write_log keeps any strict improvement regardless of outcome, since
+# the scored submission is the validation-best checkpoint. See write_log.
+_OUTCOME_TO_STATUS = {"improved": "keep", "parity": "parity",
                       "failed": "discard", "error": "crash"}
 
 
@@ -149,7 +152,25 @@ def write_log(state: ResearchState) -> dict:
     )
 
     updates = {"history": state["history"] + [record], "concepts": concepts}
-    if record["outcome"] == "improved":
+
+    # Retain ANY strict improvement, not only one that clears epsilon.
+    #
+    # Epsilon governs CONVERGENCE -- "has this run stopped making progress worth
+    # continuing for" -- and update_counters still uses it for that. It should
+    # not govern which checkpoint we keep. The brief is explicit that the scored
+    # submission is the validation-best checkpoint, so "best" must mean best.
+    #
+    # Tying retention to `improved` cost a real win on run4: the agent's FFM
+    # scored 0.6027 against a 0.6015 incumbent (+0.0012, under epsilon), was
+    # classified `parity`, and was discarded. Worse, propose() reads
+    # best_exp_dir as the base for the next attempt, so both follow-up tunes
+    # started from the untouched baseline instead of from the FFM they were
+    # supposedly refining -- and drifted down, 0.6025 then 0.6023, each one
+    # re-deriving the model from scratch.
+    #
+    # Keeping the better checkpoint is also what makes parity->tune coherent:
+    # tuning a concept only means something if the thing being tuned is kept.
+    if not state["step_failed"] and record["metrics"]["valid_primary"] > state["best_valid_primary"]:
         updates["best_checkpoint_id"] = checkpoint_id
         updates["best_exp_dir"] = state["exp_dir"]
         updates["best_valid_primary"] = record["metrics"]["valid_primary"]
