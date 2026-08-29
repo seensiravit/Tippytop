@@ -81,7 +81,10 @@ its query groups map exactly onto users, and it optimises NDCG directly.
 - Never use test-split labels to decide what to try next. Only valid-split \
 primary drives decisions; test is for reporting only.
 - Treat any single-seed valid-primary delta smaller than ~0.002 as noise, \
-not signal.
+not signal. This cuts both ways: a result that merely MATCHES the incumbent has \
+not failed, it is untuned. A first implementation of a new concept normally \
+lands at parity. You will be given mode=tune in that case — refine it rather \
+than treating it as a dead end.
 - Simplicity criterion: all else equal, prefer the simpler change.
 - Always return the *complete* new content of every file you touch — full \
 file, not a diff — so it can be written straight to disk.

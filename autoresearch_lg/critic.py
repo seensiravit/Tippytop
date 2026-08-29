@@ -24,7 +24,8 @@ from langgraph.graph import END, StateGraph
 from . import dashboard, tools
 from .state import ResearchState
 
-_OUTCOME_TO_STATUS = {"improved": "keep", "failed": "discard", "error": "crash"}
+_OUTCOME_TO_STATUS = {"improved": "keep", "parity": "discard",
+                      "failed": "discard", "error": "crash"}
 
 
 def compare_to_best(state: ResearchState) -> dict:
@@ -38,10 +39,32 @@ def keep_or_revert(state: ResearchState) -> dict:
 
 
 def classify_outcome(state: ResearchState) -> dict:
+    """Three live outcomes, because "not better" and "worse" are not the same.
+
+    The original two-way split sent everything below +epsilon to `failed`, which
+    the router answers with `pivot`. That discards a whole class of information:
+    a FIRST implementation of a genuinely good concept almost never clears
+    +0.002 immediately, because it arrives untuned.
+
+    Observed in this repo's own run log: the agent proposed field-aware FM,
+    implemented it from scratch, scored valid 0.6015 against a 0.6015 incumbent,
+    was classified `failed`, and pivoted away. FFM is the strongest model we have
+    measured -- verified at 0.6025 +-0.0004 against FM's 0.6016 +-0.0003 over six
+    seeds each. The agent had the right idea and the router threw it out.
+
+    `parity` marks |delta| <= epsilon: statistically indistinguishable from the
+    incumbent given a seed spread of ~0.0004-0.0008. That is evidence the concept
+    is VIABLE BUT UNTUNED, not evidence it is wrong. The router answers it with
+    `tune` (bounded by tune_cap), so one round of refinement is spent before the
+    concept is abandoned. Only a clear regression below -epsilon is `failed`.
+    """
     if state["step_failed"]:
         return {"outcome": "error"}
-    if state["delta"] > state["epsilon"]:
+    eps = state["epsilon"]
+    if state["delta"] > eps:
         return {"outcome": "improved"}
+    if state["delta"] >= -eps:
+        return {"outcome": "parity"}
     return {"outcome": "failed"}
 
 

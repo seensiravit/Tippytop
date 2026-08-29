@@ -10,7 +10,11 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 Mode = Literal["tune", "expand", "pivot"]
-Outcome = Literal["improved", "failed", "error"]
+Outcome = Literal["improved", "parity", "failed", "error"]
+# "parity" (|delta| <= epsilon) is distinct from "failed" (a clear regression):
+# not-better is not the same as worse, and a first implementation of a good
+# concept usually lands at parity because it is untuned. See
+# critic.classify_outcome for the measured case that motivated it.
 # "maxed" from the plan's 4-outcome table is not a separate classify_outcome
 # label here — it's router's escalation of "improved" once tune_count hits
 # tune_cap (see router() in graph.py). The mode ("expand") carries that

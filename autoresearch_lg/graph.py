@@ -100,7 +100,22 @@ def router(state: ResearchState) -> dict:
             updates.update(mode="expand", tune_count=0, concepts=concepts, active_concept_id="")
         else:
             updates.update(mode="tune", tune_count=state["tune_count"] + 1)
-    else:  # "failed"
+    elif outcome == "parity":
+        # Indistinguishable from the incumbent, which is NOT the same as worse.
+        # A first implementation of a good concept usually lands here because it
+        # is untuned -- spend a bounded number of tunes before giving up on it.
+        # (See critic.classify_outcome: the agent's own first run proposed FFM,
+        # hit parity, was called failed, and pivoted off the best direction we
+        # have measured.) When the tune budget runs out the concept still never
+        # delivered, so it PIVOTS rather than expands -- expand is for successes.
+        if state["tune_count"] + 1 >= state["tune_cap"]:
+            concepts = _close_active_concept(
+                state, f"pivoted (parity after {state['tune_cap']} tunes)")
+            updates.update(mode="pivot", tune_count=0, concepts=concepts,
+                           active_concept_id="")
+        else:
+            updates.update(mode="tune", tune_count=state["tune_count"] + 1)
+    else:  # "failed" — a clear regression below -epsilon
         concepts = _close_active_concept(state, "pivoted (no improvement)")
         updates.update(mode="pivot", tune_count=0, concepts=concepts, active_concept_id="")
     return updates
