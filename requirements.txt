@@ -1,0 +1,8 @@
+# Baseline runs on numpy only (kit constraint).
+numpy
+pytest        # tests/
+pyyaml        # experiment configs
+
+# Add heavier deps here if/when a stream needs them (decide as a team):
+# torch       # sequence / deep models (DIN, DeepFM)
+# scikit-learn

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tippytop"
+version = "0.0.1"
+description = "TikTok TechJam 2026 - KuaiRand within-user ranking"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pyyaml"]
+
+[project.scripts]
+tippytop = "tippytop.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,23 @@
+# Data (downloaded separately, large — never commit)
+kuairand-starter-kit/kuairand-starter-kit/KuaiRand-Pure/
+kuairand-starter-kit/kuairand-starter-kit/*.tar.gz
+
+# Generated submissions & run artifacts (keep the dir, not the files)
+results/submissions/*.csv
+results/runs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
