@@ -106,7 +106,7 @@ scores = model.predict(dataset, split)  # one float per row, in row order
 | `training/runner.py` | The shared load → fit → score → log loop. |
 | `submission.py` | Write and validate submission CSVs. |
 | `cli.py` | `python -m tippytop run|submit|check|score` |
-| `agent/` | **An earlier agent** (linear loop, Gemini). See *Open questions*. |
+| `agent/` | **An earlier agent** (linear loop, Gemini). Kept for offline `--llm mock` testing during development — **remove before submission**, see *Decisions*. |
 
 Adding a model is one file plus one import line in `models/__init__.py`.
 
@@ -161,17 +161,64 @@ install, but the organizers permit any open-source library, and LightGBM's
 
 ---
 
-## Open questions
+## Decisions
 
-**Two agents are present.** `autoresearch_lg/` is primary. `src/tippytop/agent/`
-is an earlier implementation (linear loop, Gemini) that was kept for two reasons:
-it has an offline `--llm mock` mode the LangGraph harness lacks, and it is a
-working fallback. Before submission the team should decide whether one agent makes
-the cleaner deliverable — a repo whose subject is "we built an autonomous agent"
-should probably contain one. Removing it is a small commit; un-removing it under
-deadline pressure is not.
+### Two agents during development — one at submission
 
-**The dependency policy.** `CONSTRAINTS` in `bootstrap.py` still tells the agent
-numpy-only. `pyproject.toml` now offers `[models]`. If the team wants the agent to
-reach for LambdaRank, that prompt has to be updated too — the extra is installed
-but the agent is still instructed not to use it.
+`autoresearch_lg/` is **the** agent and the deliverable. `src/tippytop/agent/` is
+an earlier implementation (linear loop, Gemini) that is **deliberately retained
+during development**, for two reasons:
+
+- **Offline testing.** It runs the full loop with `--llm mock` — no API key, no
+  tokens. The LangGraph harness has no equivalent: only `cli graph` and
+  `cli dashboard` run without a key, and neither exercises the loop. That makes
+  it the cheap way to smoke-test plumbing changes.
+- **A working fallback**, if the LangGraph harness breaks close to the deadline.
+
+> ### ⚠️ Remove it before submitting
+>
+> This is a decision, not an open question. The deliverable is *"an autonomous ML
+> research agent"* — a repo containing two of them, with two loops, two LLM
+> providers and two prompt sets, makes a judge guess which one produced the
+> result. It also drags `GEMINI_API_KEY` and a second dependency path into the
+> setup instructions for no benefit.
+>
+> **Do this once the LangGraph agent has produced the final submission run:**
+>
+> ```bash
+> git rm -r src/tippytop/agent
+> git rm tests/test_agent_convergence.py tests/test_agent_end_to_end.py \
+>        tests/test_agent_gemini_parse.py tests/test_agent_guard.py \
+>        tests/test_agent_journal.py tests/test_agent_parsing.py \
+>        tests/test_agent_sandbox.py
+> git rm docs/agent.md
+> ```
+>
+> Then two edits: delete `src/tippytop/cli.py` lines 130–131 (the
+> `register_agent_subparser` import and call at the end of `build_parser`), and
+> drop the `GEMINI_API_KEY` block from `.env.example`. Finally:
+>
+> ```bash
+> uv run pytest tests/ -q     # must still pass (34 → 27 tests)
+> ```
+>
+> `src/tippytop/models/` and `losses/` stay — those are the manual-experiment lane
+> and are referenced by the write-up. Only `agent/` goes.
+>
+> Removing it is a small commit. Un-removing it at 2am is not — which is exactly
+> why it stays until the final run is in hand, and not a day longer.
+
+### Libraries are open — matching the brief, not restricting past it
+
+The problem statement names LightGBM twice as in scope (§2.3 *In scope*; §2.4
+*Resource policy*: "use any open-source library … The agent is expected to draw on
+whatever published methods it can find"). The only hard rules are **no external
+training data** and **no hidden-test access**.
+
+So `CONSTRAINTS` in `bootstrap.py` offers numpy, scipy, scikit-learn and LightGBM,
+and `pyproject.toml` carries them behind the optional `[models]` extra. **Torch is
+excluded on time budget, not policy** — CPU training over 1.1M rows does not fit
+the 10-minute per-experiment cap.
+
+If you change one, change both: the extra controls what is *installed*, the prompt
+controls what the agent will *reach for*.

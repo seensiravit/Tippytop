@@ -107,6 +107,19 @@ requires costs more than it gains — recovering that is open work. Full numbers
 
 ---
 
+## Before submitting
+
+- [ ] **Remove `src/tippytop/agent/`** — an earlier agent kept only for offline
+      `--llm mock` testing during development. The deliverable is *one*
+      autonomous agent; shipping two makes a judge guess which produced the
+      result. Exact steps in [`ARCHITECTURE.md`](ARCHITECTURE.md) → *Decisions*.
+- [ ] Final submission CSV passes `python submit.py --check --split test <csv>`
+- [ ] `results/leaderboard.md` reports validation-best GAUC / nDCG@5 and the
+      absolute delta over the official baseline
+- [ ] Run logs cover, per iteration: hypothesis, code diff, metrics, and any
+      error/recovery event
+- [ ] Report total LLM tokens, agent wall-clock, and iterations used
+
 ## Team
 
 Work on your own branch `dev/<name>`, then PR into the integration branch. Put

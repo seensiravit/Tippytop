@@ -66,7 +66,8 @@ src/tippytop/          THE MODEL LIBRARY — fast manual experiments
   models/ensemble.py   fm_seedavg / fm_blend / fm_diverse (rank-averaged)
   training/runner.py   shared train/evaluate loop + leaderboard logging
   submission.py        write_submission / read_submission
-  agent/               EARLIER agent (Gemini, linear loop) — see ARCHITECTURE.md
+  agent/               EARLIER agent (Gemini). Kept ONLY for offline --llm mock
+                       testing. REMOVE BEFORE SUBMISSION — ARCHITECTURE.md
 
 tests/                 34 tests, both lanes
 results/leaderboard.md shared scoreboard
