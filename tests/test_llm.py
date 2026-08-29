@@ -213,6 +213,7 @@ def test_research_plan_accepts_descriptive_extras_and_scalar_feature_text() -> N
         **PLAN_PAYLOAD,
         "experiment_title": "A descriptive title",
         "data_and_features": "Use causal user histories and prediction-time context.",
+        "model_and_objective": {"model": "ranker", "objective": "pairwise"},
     }
 
     plan = ResearchPlan.from_dict(payload)
@@ -220,6 +221,7 @@ def test_research_plan_accepts_descriptive_extras_and_scalar_feature_text() -> N
     assert plan.data_and_features == (
         "Use causal user histories and prediction-time context.",
     )
+    assert plan.model_and_objective == '{"model": "ranker", "objective": "pairwise"}'
 
 
 def test_review_requires_all_structured_checks() -> None:

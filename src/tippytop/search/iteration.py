@@ -1,4 +1,4 @@
-"""One auditable scientist-coder-reviewer experiment iteration."""
+"""One auditable scientist-coder-executor experiment iteration."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from ..artifacts import (
 from ..config import RunConfig
 from ..convergence import ConvergenceTracker
 from ..llm import (
-    ExperimentReview,
     GenerationFailure,
     LLMClient,
     LLMDeadlineExceeded,
@@ -65,9 +64,7 @@ def run_iteration(
     best_before_experiment = dict(state["best"]["metrics"])
     responses: list[LLMResult] = []
     research_responses: list[LLMResult] = []
-    review_responses: list[LLMResult] = []
     research_plan: ResearchPlan | None = None
-    pre_execution_review: ExperimentReview | None = None
     generation_stage = "research"
 
     store.event("research_started", iteration=iteration, parent_id=parent_id)
@@ -85,18 +82,6 @@ def run_iteration(
         if experiment.source_hash in used_hashes:
             raise ValueError(f"source hash {experiment.source_hash} was already evaluated")
         proposed_experiment = experiment
-        generation_stage = "review"
-        store.event("review_started", iteration=iteration, source_hash=experiment.source_hash)
-        pre_execution_review, review_responses = llm.review(
-            context,
-            research_plan,
-            proposed_experiment,
-            deadline=deadline,
-        )
-        _add_usage(state, review_responses)
-        experiment = pre_execution_review.experiment
-        if experiment.source_hash in used_hashes:
-            raise ValueError(f"reviewed source hash {experiment.source_hash} was already evaluated")
     except LLMDeadlineExceeded:
         state["stopping_reason"] = "wall_clock_limit"
         _persist_state(store, state, wall_started)
@@ -112,8 +97,6 @@ def run_iteration(
             failed_responses = error.responses
             if generation_stage == "research":
                 research_responses.extend(failed_responses)
-            elif generation_stage == "review":
-                review_responses.extend(failed_responses)
             else:
                 responses.extend(failed_responses)
             _add_usage(state, failed_responses)
@@ -131,7 +114,7 @@ def run_iteration(
             research_plan,
             research_responses,
             responses,
-            review_responses,
+            [],
             state,
         )
         state["iteration"] = iteration
@@ -139,22 +122,11 @@ def run_iteration(
         _commit_iteration(store, state, record, wall_started)
         return
 
-    used_hashes.add(proposed_experiment.source_hash)
     used_hashes.add(experiment.source_hash)
     initial_experiment = experiment
     experiment_id = f"iteration-{iteration:03d}"
     initial_diff = _source_diff(parent_source, experiment.source, parent_id, experiment_id)
     atomic_write_text(store.path / "diffs" / f"{iteration:03d}-initial.diff", initial_diff)
-    if proposed_experiment.source_hash != experiment.source_hash:
-        atomic_write_text(
-            store.path / "diffs" / f"{iteration:03d}-review.diff",
-            _source_diff(
-                proposed_experiment.source,
-                experiment.source,
-                f"{experiment_id}-proposed",
-                f"{experiment_id}-reviewed",
-            ),
-        )
     experiment_path = Path("experiments") / f"{iteration:03d}.json"
     store.write_json(
         experiment_path,
@@ -167,8 +139,6 @@ def run_iteration(
             "experiment": experiment.to_dict(),
             "source_hash": experiment.source_hash,
             "responses": [_response_dict(response) for response in responses],
-            "review": pre_execution_review.to_dict(),
-            "review_responses": [_response_dict(response) for response in review_responses],
         },
     )
 
@@ -223,13 +193,11 @@ def run_iteration(
             "research_plan": research_plan.to_dict(),
             "research_responses": [_response_dict(response) for response in research_responses],
             "proposed_experiment": proposed_experiment.to_dict(),
-            "pre_execution_review": pre_execution_review.to_dict(),
             "initial_experiment": initial_experiment.to_dict(),
             "initial_source_hash": initial_experiment.source_hash,
             "executed_experiment": experiment.to_dict(),
             "source_hash": experiment.source_hash,
             "responses": [_response_dict(response) for response in responses],
-            "review_responses": [_response_dict(response) for response in review_responses],
             "recovery": recovery,
         },
     )
@@ -244,7 +212,6 @@ def run_iteration(
         "source_hash": experiment.source_hash,
         "initial_source_hash": initial_experiment.source_hash,
         "proposed_source_hash": proposed_experiment.source_hash,
-        "pre_execution_review": pre_execution_review.to_dict(),
         "code_diff": code_diff,
         "code_diff_path": store.relative_path(code_diff_path),
         "source_revision": source_revision(),

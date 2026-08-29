@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,9 +43,12 @@ class ResearchPlan:
         scalars: dict[str, str] = {}
         for name in scalar_names:
             value = payload[name]
-            if not isinstance(value, str) or not value.strip():
+            if isinstance(value, str) and value.strip():
+                scalars[name] = value.strip()
+            elif name == "model_and_objective" and isinstance(value, (dict, list)) and value:
+                scalars[name] = json.dumps(value, sort_keys=True)
+            else:
                 raise ValueError(f"research plan field {name!r} must be a non-empty string")
-            scalars[name] = value.strip()
 
         lists = {
             name: _string_tuple(payload[name], name)
