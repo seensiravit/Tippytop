@@ -102,14 +102,22 @@ class FMPlusFFM(_Ensemble):
     FM and FFM differ structurally, not just by seed: FM gives each feature one
     embedding for every interaction it takes part in, FFM gives it a separate
     embedding per interacting field. They therefore misrank different pairs.
-    Measured separately at seed 42 they tie on validation (0.6019 each) while
-    FFM generalises better to test (0.5965 vs 0.5957) — equal skill, different
-    errors, which is the ideal shape for an ensemble member.
+    Verified over 6 seeds each (see results/leaderboard.md):
+
+        fm    valid 0.6016 +- 0.0003   test 0.5948 +- 0.0009
+        ffm   valid 0.6025 +- 0.0004   test 0.5967 +- 0.0004
+
+    FFM is the stronger member outright — non-overlapping, every FFM seed beat
+    every FM seed on test. Ensembling adds ~+0.0010 on top, replicated on two
+    disjoint seed halves. Cross-family over same-family is only +0.0003 at equal
+    member count, which is inside the noise: **most of the gain is FFM being a
+    better model, not the mixing.** n_seeds=6 (12 members) is the measured best
+    on test at 0.5978.
     """
 
     name = "fm_ffm"
 
-    def __init__(self, n_seeds=3, seed=0, verbose=True, **kw):
+    def __init__(self, n_seeds=6, seed=0, verbose=True, **kw):
         super().__init__(seed=seed, verbose=verbose, **kw)
         self.n_seeds = n_seeds
 

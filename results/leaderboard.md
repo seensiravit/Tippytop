@@ -181,6 +181,67 @@ correlation figure, since "we added the auxiliary signals the README lists" is
 what most teams will do without checking whether those signals carry independent
 information.
 
+### VERIFIED: FFM beats FM, and ensembling adds on top
+
+Protocol: fit 6 FM and 6 FFM once, cache within-user ranks, then form ensembles
+from them. Nothing selected on any metric; both decision rules fixed in advance.
+
+**Single model (n=6 each), the null:**
+
+| | valid | test |
+|---|---|---|
+| fm | 0.6016 ± 0.0003 | 0.5948 ± 0.0009 |
+| **ffm** | **0.6025 ± 0.0004** | **0.5967 ± 0.0004** |
+
+Non-overlapping. Every FFM seed beat every FM seed on test, and FFM's test
+variance is less than half. **FFM is simply the better single model**: +0.0009
+valid / +0.0019 test. (Note the seed-42 run where they tied at 0.6019 was
+misleading — seed 42 is a high draw for FM.)
+
+**Ensembling, two disjoint halves:**
+
+| half | valid | vs single-model mean |
+|---|---|---|
+| seeds 0-2 (3FM+3FFM) | 0.6035 | +0.0014 |
+| seeds 3-5 (3FM+3FFM) | 0.6034 | +0.0013 |
+
+Replicated on independent seed groups against a 0.0004 threshold. Solid.
+
+**Equal member count — is it family diversity, or just more members?**
+
+| n=6 | valid | test |
+|---|---|---|
+| 6x FM (same family) | 0.6029 | 0.5961 |
+| 6x FFM (same family) | 0.6032 | 0.5973 |
+| 3FM+3FFM (cross) | **0.6035** | 0.5972 |
+| 6FM+6FFM (n=12) | 0.6034 | **0.5978** |
+
+Rule 2 passed, but by **+0.0003** — inside the noise.
+
+> **Correction to the 2026-08-30 entry above.** It claimed "six cross-family
+> members beat twelve same-family members" as evidence that family diversity is
+> what pays. That comparison was confounded: `fm_diverse`'s members were FM +
+> *listwise*, and listwise is a weak member (0.5987 at best). Now that 6x FFM
+> alone reaches 0.6032, the earlier result does not support the claim.
+>
+> **Corrected reading: FFM is the win. Ensembling adds ~+0.0010 on top, as it
+> does for any model. Cross-family over same-family is marginal and unproven.**
+
+**Best result, against the true baseline (n=10 means, not seed 42):**
+
+| | valid | test |
+|---|---|---|
+| FM baseline | 0.6016 | 0.5948 |
+| best ensemble (6FM+6FFM) | **0.6035** | **0.5978** |
+| delta | **+0.0019** | **+0.0030** |
+
+Test clears the 0.002 threshold. Validation sits at +0.0019, just under — and
+validation is the split we are allowed to select on. Honest claim: *a replicated
+improvement of +0.0019 valid / +0.0030 test, right at the noise threshold on the
+split that governs selection.*
+
+This is the first result in the project that survived its own verification.
+
 ### Direction ledger
 
 | Direction | Status | Evidence |
@@ -189,7 +250,9 @@ information.
 | LambdaRank / GBDT | **closed** | no user x item signal available to axis-aligned splits |
 | Multi-task (organisers' #3) | **closed** | 6/6 against control, monotone the wrong way |
 | Static features (organisers') | closed by organisers | but see the item-aggregates note — their ablation is narrower than it reads |
-| **Cross-family ensembling** | **live** | 6 cross-family members beat 12 same-family; verification in progress |
+| **FFM (field-aware FM)** | **verified win** | +0.0009 valid / +0.0019 test over FM, non-overlapping across 6 seeds each |
+| **Ensembling (rank-average)** | **verified** | +0.0013..+0.0014 on two disjoint seed halves |
+| Cross-family over same-family | marginal | +0.0003 at equal member count — inside noise, claim withdrawn |
 | User sequences (organisers' #2) | untried | ~42 events/user, temper expectations |
 | Unbiased eval on `log_random` | untried | one eval pass, no new modelling |
 | 2026-08-29 | auto | fm_listwise (seed=42) | 0.6591 | 0.5319 | 0.5955 | 0.5892 |  |

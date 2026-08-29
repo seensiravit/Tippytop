@@ -67,9 +67,12 @@ HEADROOM = [
             "authors' vector. Use a smaller k (4 vs FM's 16) so total parameters "
             "stay comparable -- spend them on structure, not width. Trains "
             "row-shuffled, so it pays none of the grouped-batching cost a "
-            "listwise loss does. Measured here: ties FM on validation and "
-            "generalises slightly better to test. Won Criteo/Avazu/Outbrain "
-            "(Juan et al., RecSys 2016)."
+            "listwise loss does. VERIFIED here over 6 seeds each: FFM valid "
+            "0.6025 +-0.0004 / test 0.5967 +-0.0004 vs FM valid 0.6016 +-0.0003 "
+            "/ test 0.5948 +-0.0009 -- non-overlapping, every FFM seed beat "
+            "every FM seed on test, and FFM's test variance is less than half. "
+            "This is the strongest single model measured. Won "
+            "Criteo/Avazu/Outbrain (Juan et al., RecSys 2016)."
         ),
     },
     {
@@ -77,10 +80,12 @@ HEADROOM = [
         "keywords": ["ensemble", "blend", "rank-average", "seed averaging", "stacking"],
         "note": (
             "Rank-average several models WITHIN-USER (not raw scores -- scales "
-            "differ between objectives and only order is scored). Measured: "
-            "members must differ by MODEL FAMILY, not by seed. Six FM+FFM "
-            "members beat twelve FM-only members; more seeds of one family "
-            "cancels noise but not shared bias."
+            "differ between objectives and only order is scored). Verified: "
+            "+0.0013..+0.0014 valid on two disjoint seed halves, on top of "
+            "whatever the members score. Note it adds roughly the same amount "
+            "for same-family and cross-family members (6x FFM 0.6032 vs "
+            "3FM+3FFM 0.6035), so pick STRONG members first; mixing families "
+            "is a marginal extra, not the main effect."
         ),
     },
     {
