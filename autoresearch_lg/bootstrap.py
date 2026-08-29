@@ -35,7 +35,9 @@ DATA_FILES = [
     "log_random_4_22_to_5_08_pure.csv",
 ]
 
-DEFAULT_MODEL = "gpt-5.5"  # verified live against the account's actual model list
+# claude-* dispatches to Anthropic (ANTHROPIC_API_KEY), anything else to
+# OpenAI (OPENAI_API_KEY) — see propose.py's _is_anthropic_model.
+DEFAULT_MODEL = "claude-sonnet-5"
 CONFIG_DEFAULTS = {
     "data_dir": "./KuaiRand-Pure/data",
     "model": DEFAULT_MODEL,

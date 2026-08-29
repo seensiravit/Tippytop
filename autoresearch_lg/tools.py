@@ -11,8 +11,14 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+# The interpreter running this harness. NOT a bare "python3" string: on Windows
+# that resolves to the Microsoft Store alias stub ("Python was not found"), and
+# on any platform it can pick an interpreter outside our venv (missing numpy).
+PYTHON = sys.executable
 
 RUN_TIMEOUT_SECONDS = 600  # program.md: kill and discard past 10 minutes
 EDA_TIMEOUT_SECONDS = 60
@@ -104,7 +110,7 @@ def create_experiment_branch(repo_root: str, tag: str) -> str:
 
 # ------------------------------------------------------------ subprocess --
 def run_baseline(cwd: str, data_dir: str, seed: int = 0) -> dict:
-    """Run `python3 baseline.py --model fm` from `cwd` and capture output.
+    """Run `<python> baseline.py --model fm` from `cwd` and capture output.
 
     `cwd` is whichever directory holds the baseline.py to run — normally an
     experiment folder under runs/ (see make_experiment_dir), never repo_root
@@ -114,7 +120,7 @@ def run_baseline(cwd: str, data_dir: str, seed: int = 0) -> dict:
     Returns dict(stdout, wall_seconds, crashed, timed_out).
     """
     cmd = [
-        "python3", "baseline.py",
+        PYTHON, "baseline.py",
         "--model", "fm",
         "--data_dir", data_dir,
         "--seed", str(seed),
@@ -155,7 +161,7 @@ def run_eda(repo_root: str, data_dir: str) -> dict:
     """
     try:
         res = subprocess.run(
-            ["python3", "-c", _EDA_SCRIPT, data_dir],
+            [PYTHON, "-c", _EDA_SCRIPT, data_dir],
             cwd=repo_root, capture_output=True, text=True,
             timeout=EDA_TIMEOUT_SECONDS,
         )
@@ -264,7 +270,7 @@ def make_submission(best_exp_dir: str, repo_root: str, data_dir: str, out_path: 
     out_abs = str(Path(out_path).resolve())
 
     make = subprocess.run(
-        ["python3", "submit.py", "--make", "--split", "test",
+        [PYTHON, "submit.py", "--make", "--split", "test",
          "--data_dir", data_dir, out_abs],
         cwd=best_exp_dir, capture_output=True, text=True, timeout=RUN_TIMEOUT_SECONDS,
     )
@@ -275,7 +281,7 @@ def make_submission(best_exp_dir: str, repo_root: str, data_dir: str, out_path: 
             f"expects. stderr:\n{make.stderr[-2000:]}"
         )
     check = subprocess.run(
-        ["python3", "submit.py", "--check", "--split", "test",
+        [PYTHON, "submit.py", "--check", "--split", "test",
          "--data_dir", data_dir, out_abs],
         cwd=best_exp_dir, capture_output=True, text=True, timeout=60,
     )
