@@ -38,10 +38,12 @@ class _FMCore:
         inter = 0.5 * ((S ** 2).sum(1) - (E ** 2).sum((1, 2)))
         return self.b + self.W[X].sum(1) + inter, E, S
 
-    def step(self, X, y):
-        B = len(y)
-        z, E, S = self.logits(X)
-        g = ((_sigmoid(z) - y) / B).astype(np.float32)   # (B,)
+    def backward(self, X, g, E, S):
+        """One Adam update from ``g`` = dLoss/dlogits, and the forward's E, S.
+
+        Split out of ``step`` so any objective (see ``tippytop.losses.ranking``)
+        can drive the same FM backward pass. Math is unchanged.
+        """
         gV = np.zeros_like(self.V); gW = np.zeros_like(self.W)
         np.add.at(gW, X, g[:, None])
         np.add.at(gV, X, g[:, None, None] * (S[:, None, :] - E))
@@ -53,6 +55,12 @@ class _FMCore:
             Vv *= b2; Vv += (1 - b2) * (G * G)
             P -= self.lr * (M / (1 - b1 ** self.t)) / (np.sqrt(Vv / (1 - b2 ** self.t)) + eps)
         self.b -= self.lr * g.sum()
+
+    def step(self, X, y):
+        B = len(y)
+        z, E, S = self.logits(X)
+        g = ((_sigmoid(z) - y) / B).astype(np.float32)   # (B,)
+        self.backward(X, g, E, S)
         return float(-np.mean(y * np.log(_sigmoid(z) + 1e-9)
                               + (1 - y) * np.log(1 - _sigmoid(z) + 1e-9)))
 

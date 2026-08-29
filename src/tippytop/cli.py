@@ -22,7 +22,7 @@ from .submission import write_submission, read_submission
 
 def _model_kwargs(a) -> dict:
     kw = {}
-    for key in ("k", "lr", "epochs"):
+    for key in ("k", "lr", "epochs", "alpha", "list_size", "groups_per_batch"):
         v = getattr(a, key, None)
         if v is not None:
             kw[key] = v
@@ -97,6 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--k", type=int, default=None, help="FM embedding dim")
         p.add_argument("--lr", type=float, default=None, help="FM learning rate")
         p.add_argument("--epochs", type=int, default=None, help="FM max epochs")
+        # ranking models (fm_listwise / fm_bpr / fm_hybrid) — see models/fm_rank.py
+        p.add_argument("--alpha", type=float, default=None,
+                       help="fm_hybrid: pointwise weight (1.0 = FM objective)")
+        p.add_argument("--list_size", type=int, default=None,
+                       help="impressions sampled per user per step (0 = whole history)")
+        p.add_argument("--groups_per_batch", type=int, default=None,
+                       help="users per optimisation step")
 
     p = sub.add_parser("run", help="train + evaluate on valid & test")
     add_model_opts(p)
