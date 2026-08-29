@@ -28,6 +28,7 @@ from .llm import (
     LLMTransportFailure,
 )
 from .research_context import build_research_context
+from .research_plan import ResearchPlan
 from .runner import ExperimentFailure, run_experiment
 from .search_journal import (
     begin_attempt as _begin_attempt,
@@ -116,18 +117,32 @@ def _run_iteration(
     context = build_research_context(store, state, history, parent_source)
     best_before_experiment = dict(state["best"]["metrics"])
     responses: list[LLMResult] = []
+    research_responses: list[LLMResult] = []
     review_responses: list[LLMResult] = []
+    research_plan: ResearchPlan | None = None
     pre_execution_review: ExperimentReview | None = None
+    generation_stage = "research"
 
-    store.event("generation_started", iteration=iteration, parent_id=parent_id)
+    store.event("research_started", iteration=iteration, parent_id=parent_id)
     try:
-        experiment, responses = llm.generate(context, deadline=deadline)
+        research_plan, research_responses = llm.research(context, deadline=deadline)
+        _add_usage(state, research_responses)
+        generation_stage = "coding"
+        store.event(
+            "coding_started",
+            iteration=iteration,
+            hypothesis=research_plan.hypothesis,
+        )
+        experiment, responses = llm.generate(context, research_plan, deadline=deadline)
         _add_usage(state, responses)
         if experiment.source_hash in used_hashes:
             raise ValueError(f"source hash {experiment.source_hash} was already evaluated")
         proposed_experiment = experiment
+        generation_stage = "review"
+        store.event("review_started", iteration=iteration, source_hash=experiment.source_hash)
         pre_execution_review, review_responses = llm.review(
             context,
+            research_plan,
             proposed_experiment,
             deadline=deadline,
         )
@@ -148,13 +163,30 @@ def _run_iteration(
     except (ConnectionError, ValueError) as error:
         if isinstance(error, GenerationFailure):
             failed_responses = error.responses
-            if review_responses:
+            if generation_stage == "research":
+                research_responses.extend(failed_responses)
+            elif generation_stage == "review":
                 review_responses.extend(failed_responses)
             else:
                 responses.extend(failed_responses)
             _add_usage(state, failed_responses)
-        store.event("generation_failed", iteration=iteration, error=str(error))
-        record = _generation_failure_record(iteration, parent_id, error, responses, state)
+        store.event(
+            "generation_failed",
+            iteration=iteration,
+            stage=generation_stage,
+            error=str(error),
+        )
+        record = _generation_failure_record(
+            iteration,
+            parent_id,
+            generation_stage,
+            error,
+            research_plan,
+            research_responses,
+            responses,
+            review_responses,
+            state,
+        )
         state["iteration"] = iteration
         state["stagnant"] = tracker.stagnant
         _commit_iteration(store, state, record, wall_started)
@@ -183,6 +215,8 @@ def _run_iteration(
         {
             "status": "selected",
             "parent_id": parent_id,
+            "research_plan": research_plan.to_dict(),
+            "research_responses": [_response_dict(response) for response in research_responses],
             "proposed_experiment": proposed_experiment.to_dict(),
             "experiment": experiment.to_dict(),
             "source_hash": experiment.source_hash,
@@ -204,6 +238,7 @@ def _run_iteration(
         "parent_id": parent_id,
         "hypothesis": experiment.hypothesis,
         "expected_effect": experiment.expected_effect,
+        "research_plan": research_plan.to_dict(),
         "source_hash": experiment.source_hash,
         "source_hashes": sorted(used_hashes),
         "source_revision": expected_revision,
@@ -283,6 +318,7 @@ def _run_iteration(
                 context,
                 experiment,
                 execution_error,
+                plan=research_plan,
                 deadline=deadline,
             )
             responses.extend(repair_responses)
@@ -342,6 +378,8 @@ def _run_iteration(
         {
             "status": "executed" if result is not None else "failed",
             "parent_id": parent_id,
+            "research_plan": research_plan.to_dict(),
+            "research_responses": [_response_dict(response) for response in research_responses],
             "proposed_experiment": proposed_experiment.to_dict(),
             "pre_execution_review": pre_execution_review.to_dict(),
             "initial_experiment": initial_experiment.to_dict(),
@@ -360,6 +398,7 @@ def _run_iteration(
         "parent_id": parent_id,
         "hypothesis": experiment.hypothesis,
         "expected_effect": experiment.expected_effect,
+        "research_plan": research_plan.to_dict(),
         "source_hash": experiment.source_hash,
         "initial_source_hash": initial_experiment.source_hash,
         "proposed_source_hash": proposed_experiment.source_hash,
@@ -442,8 +481,12 @@ def _source_diff(before: str, after: str, before_id: str, after_id: str) -> str:
 def _generation_failure_record(
     iteration: int,
     parent_id: str,
+    stage: str,
     error: Exception,
+    research_plan: ResearchPlan | None,
+    research_responses: Sequence[LLMResult],
     responses: Sequence[LLMResult],
+    review_responses: Sequence[LLMResult],
     state: dict[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -451,10 +494,14 @@ def _generation_failure_record(
         "id": f"iteration-{iteration:03d}",
         "parent_id": parent_id,
         "status": "generation_failed",
+        "generation_stage": stage,
         "error": str(error),
         "became_best": False,
         "source_revision": source_revision(),
+        "research_plan": research_plan.to_dict() if research_plan is not None else None,
+        "research_responses": [_response_dict(response) for response in research_responses],
         "responses": [_response_dict(response) for response in responses],
+        "review_responses": [_response_dict(response) for response in review_responses],
         "manual_interventions": state["manual_interventions"],
     }
 

@@ -10,8 +10,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import RunConfig
-from .experiment_contract import experiment_contract
+from .experiment_contract import experiment_contract, research_environment
 from .generated import GeneratedExperiment, executable_fingerprint, parse_json_object
+from .research_plan import ResearchPlan
+
+
+REVIEW_CHECKS = (
+    "plan_fidelity",
+    "substantive_novelty",
+    "feature_path_complete",
+    "continuous_ranking_scores",
+    "leakage_safe",
+    "resource_feasible",
+)
 
 
 @dataclass(frozen=True)
@@ -28,12 +39,14 @@ class LLMResult:
 class ExperimentReview:
     verdict: str
     critique: str
+    checks: dict[str, bool]
     experiment: GeneratedExperiment
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "verdict": self.verdict,
             "critique": self.critique,
+            "checks": self.checks,
             "experiment": self.experiment.to_dict(),
             "source_hash": self.experiment.source_hash,
         }
@@ -122,13 +135,15 @@ class LLMClient:
     def generate(
         self,
         context: dict[str, Any],
+        plan: ResearchPlan,
         *,
         deadline: float | None = None,
     ) -> tuple[GeneratedExperiment, list[LLMResult]]:
         system = (
-            "You are an autonomous recommender-system researcher and Python engineer. "
-            "Design the next measured experiment and write its complete implementation. "
-            "Use the measured history and do not repeat documented dead ends. "
+            "You are the implementation engineer in an autonomous ML lab. Write the complete "
+            "experiment module for the scientist's approved plan. Implement every planned feature, "
+            "supervision signal, model component, and objective; do not simplify it into a familiar "
+            "starter model or redesign the plan. Host helpers are optional, not a prescribed architecture. "
             "Return only one JSON object with no Markdown or commentary."
         )
         contract = experiment_contract()
@@ -137,7 +152,11 @@ class LLMClient:
             {
                 "role": "user",
                 "content": json.dumps(
-                    {"experiment_contract": contract, "research_context": context},
+                    {
+                        "experiment_contract": contract,
+                        "research_plan": plan.to_dict(),
+                        "research_context": context,
+                    },
                     sort_keys=True,
                 ),
             },
@@ -150,7 +169,7 @@ class LLMClient:
                 result = self.complete(
                     correction_messages,
                     temperature=0.2 if correction == 0 else 0.0,
-                    max_tokens=4000,
+                    max_tokens=6500,
                     attempts=1,
                     json_mode=True,
                     timeout=self._deadline_timeout(deadline),
@@ -177,11 +196,87 @@ class LLMClient:
                 )
         raise GenerationFailure(str(last_error), responses) from last_error
 
+    def research(
+        self,
+        context: dict[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> tuple[ResearchPlan, list[LLMResult]]:
+        """Choose one substantive scientific direction before any code is written."""
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the lead scientist in an autonomous recommender-system lab. Select one "
+                    "falsifiable, resource-feasible experiment, not a list of candidates and not code. "
+                    "Escape local helper-driven variations: use the raw schema and measured failures to "
+                    "make a substantive change in representation, supervision, objective, model, or a "
+                    "combination. Explain exactly how it departs from prior work and how every training-only "
+                    "signal becomes valid prediction-time state. Return one JSON object only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "research_plan_schema": {
+                            "hypothesis": "specific falsifiable claim",
+                            "expected_effect": "expected ranking-metric effect",
+                            "rationale": "scientific mechanism",
+                            "departure_from_prior_work": "why this is not another measured variation",
+                            "data_and_features": ["precise signal and causal construction"],
+                            "model_and_objective": "representation, learner, supervision, and objective",
+                            "implementation_outline": ["ordered executable design step"],
+                            "failure_modes": ["risk the coder and reviewer must address"],
+                        },
+                        "research_environment": research_environment(),
+                        "research_context": context,
+                    },
+                    sort_keys=True,
+                ),
+            },
+        ]
+        responses: list[LLMResult] = []
+        last_error: Exception | None = None
+        for correction in range(2):
+            try:
+                result = self.complete(
+                    messages,
+                    temperature=0.65 if correction == 0 else 0.1,
+                    max_tokens=2400,
+                    attempts=1,
+                    json_mode=True,
+                    timeout=self._deadline_timeout(deadline),
+                )
+            except ConnectionError as error:
+                raise LLMTransportFailure(str(error), responses) from error
+            responses.append(result)
+            try:
+                return ResearchPlan.from_dict(parse_json_object(result.content)), responses
+            except ValueError as error:
+                last_error = error
+                if correction == 0:
+                    messages.extend(
+                        [
+                            {"role": "assistant", "content": result.content},
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"The plan violates the schema: {error}. Return one corrected, "
+                                    "complete research plan JSON object and no code."
+                                ),
+                            },
+                        ]
+                    )
+        raise GenerationFailure(str(last_error), responses) from last_error
+
     def repair(
         self,
         context: dict[str, Any],
         failed: GeneratedExperiment,
         error: str,
+        plan: ResearchPlan | None = None,
         *,
         deadline: float | None = None,
     ) -> tuple[GeneratedExperiment, list[LLMResult]]:
@@ -201,6 +296,7 @@ class LLMClient:
                 "content": json.dumps(
                     {
                         "experiment_contract": experiment_contract(),
+                        "research_plan": plan.to_dict() if plan is not None else None,
                         "research_context": context,
                         "failed_experiment": failed.to_dict(),
                         "runtime_error": error[-12000:],
@@ -217,7 +313,7 @@ class LLMClient:
                 result = self.complete(
                     messages,
                     temperature=0.0,
-                    max_tokens=4000,
+                    max_tokens=6500,
                     attempts=1,
                     json_mode=True,
                     timeout=self._deadline_timeout(deadline),
@@ -250,6 +346,7 @@ class LLMClient:
     def review(
         self,
         context: dict[str, Any],
+        plan: ResearchPlan,
         proposed: GeneratedExperiment,
         *,
         deadline: float | None = None,
@@ -261,13 +358,14 @@ class LLMClient:
                 "role": "system",
                 "content": (
                     "You are the independent senior reviewer in an autonomous ML research loop. "
-                    "Inspect the proposed experiment against its exact runtime contract and measured "
-                    "history. Trace every claimed feature into both final fit and predict matrices; "
+                    "Inspect the proposed experiment against the scientist's plan, exact runtime contract, "
+                    "and measured history. Trace every planned feature into both final fit and predict matrices; "
                     "reject ignored/no-op features, label leakage, class-label outputs instead of "
                     "continuous ranking scores, undertrained one-step objectives, invalid helper use, "
                     "non-vectorized full-data code, and repeated measured dead ends. If any blocking "
                     "issue exists, rewrite the complete module yourself. Return one JSON object only "
-                    "with verdict ('pass' or 'revise'), critique, hypothesis, expected_effect, and source."
+                    "with verdict ('pass' or 'revise'), critique, all six boolean checks, hypothesis, "
+                    "expected_effect, and source. Every check must describe the final returned module."
                 ),
             },
             {
@@ -275,6 +373,7 @@ class LLMClient:
                 "content": json.dumps(
                     {
                         "experiment_contract": experiment_contract(),
+                        "research_plan": plan.to_dict(),
                         "research_context": context,
                         "proposed_experiment": proposed.to_dict(),
                     },
@@ -289,7 +388,7 @@ class LLMClient:
                 result = self.complete(
                     messages,
                     temperature=0.1 if correction == 0 else 0.0,
-                    max_tokens=4000,
+                    max_tokens=6500,
                     attempts=1,
                     json_mode=True,
                     timeout=self._deadline_timeout(deadline),
@@ -299,11 +398,14 @@ class LLMClient:
             responses.append(result)
             try:
                 review = _parse_review(result.content)
-                if review.verdict == "revise" and (
+                changed = (
                     executable_fingerprint(review.experiment.source)
-                    == executable_fingerprint(proposed.source)
-                ):
+                    != executable_fingerprint(proposed.source)
+                )
+                if review.verdict == "revise" and not changed:
                     raise ValueError("review requested revision but did not change executable code")
+                if review.verdict == "pass" and changed:
+                    raise ValueError("review changed executable code but used a pass verdict")
                 return review, responses
             except ValueError as review_error:
                 last_error = review_error
@@ -314,8 +416,8 @@ class LLMClient:
                             {
                                 "role": "user",
                                 "content": (
-                                    f"The review response is invalid: {review_error}. Return all five "
-                                    "required fields. A revise verdict must include a substantively "
+                                    f"The review response is invalid: {review_error}. Return every "
+                                    "required field and all six checks. A revise verdict must include a substantively "
                                     "corrected complete module; pass must preserve executable behavior."
                                 ),
                             },
@@ -380,7 +482,7 @@ class LLMClient:
 
 def _parse_review(content: str) -> ExperimentReview:
     payload = parse_json_object(content)
-    expected = {"verdict", "critique", "hypothesis", "expected_effect", "source"}
+    expected = {"verdict", "critique", "checks", "hypothesis", "expected_effect", "source"}
     missing = expected - set(payload)
     unknown = set(payload) - expected
     if missing:
@@ -393,7 +495,13 @@ def _parse_review(content: str) -> ExperimentReview:
         raise ValueError("review verdict must be 'pass' or 'revise'")
     if not isinstance(critique, str) or not critique.strip():
         raise ValueError("review critique must be a non-empty string")
+    raw_checks = payload["checks"]
+    if not isinstance(raw_checks, dict) or set(raw_checks) != set(REVIEW_CHECKS):
+        raise ValueError(f"review checks must contain exactly: {list(REVIEW_CHECKS)}")
+    if any(value is not True for value in raw_checks.values()):
+        raise ValueError("every review check must pass for the final returned module")
+    checks = {name: True for name in REVIEW_CHECKS}
     experiment = GeneratedExperiment.from_dict(
         {key: payload[key] for key in ("hypothesis", "expected_effect", "source")}
     )
-    return ExperimentReview(verdict, critique.strip(), experiment)
+    return ExperimentReview(verdict, critique.strip(), checks, experiment)

@@ -6,7 +6,8 @@ import pytest
 
 from tippytop.config import RunConfig
 from tippytop.generated import GeneratedExperiment
-from tippytop.llm import GenerationFailure, LLMClient, LLMResult, LLMTransportFailure
+from tippytop.llm import REVIEW_CHECKS, GenerationFailure, LLMClient, LLMResult, LLMTransportFailure
+from tippytop.research_plan import ResearchPlan
 
 
 SOURCE = """import numpy as np
@@ -22,6 +23,29 @@ REPAIRED_SOURCE = SOURCE.replace(
     "return np.full(len(rows), model, dtype=np.float32)",
     "return np.full(len(rows), float(model), dtype=np.float32)",
 )
+
+PLAN_PAYLOAD = {
+    "hypothesis": "Use a substantive learned ranking signal.",
+    "expected_effect": "Improve within-user ordering.",
+    "rationale": "The representation and objective should match ranking errors.",
+    "departure_from_prior_work": "Change both the representation and supervision.",
+    "data_and_features": ["Build causal training aggregates and replayable prediction features."],
+    "model_and_objective": "Fit a seeded continuous-score ranking model.",
+    "implementation_outline": ["Fit state on train.", "Return state and score prediction rows."],
+    "failure_modes": ["Prevent leakage and class-label outputs."],
+}
+PLAN = ResearchPlan.from_dict(PLAN_PAYLOAD)
+
+
+def review_payload(source: str, *, verdict: str = "revise") -> dict[str, object]:
+    return {
+        "verdict": verdict,
+        "critique": "The final module faithfully implements the plan and returns continuous scores.",
+        "checks": {name: True for name in REVIEW_CHECKS},
+        "hypothesis": "Produce a nonconstant score using the available rows.",
+        "expected_effect": "Improve within-user ordering.",
+        "source": source,
+    }
 
 
 class FakeClient(LLMClient):
@@ -50,7 +74,7 @@ def test_invalid_generated_experiment_is_corrected() -> None:
         "source": SOURCE,
     }
     client = FakeClient(["not json", json.dumps(valid)])
-    experiment, responses = client.generate({"best": 0.6})
+    experiment, responses = client.generate({"best": 0.6}, PLAN)
     assert experiment.source == SOURCE
     assert len(responses) == 2
     assert all(call[1]["attempts"] == 1 for call in client.calls)
@@ -58,13 +82,13 @@ def test_invalid_generated_experiment_is_corrected() -> None:
 
 def test_transport_failure_is_distinct_from_invalid_generation() -> None:
     with pytest.raises(LLMTransportFailure, match="temporary timeout"):
-        FailingClient().generate({"best": 0.6})
+        FailingClient().generate({"best": 0.6}, PLAN)
 
 
 def test_rejected_correction_preserves_raw_responses() -> None:
     client = FakeClient(["not json", "still not json", "also not json"])
     with pytest.raises(GenerationFailure) as captured:
-        client.generate({"best": 0.6})
+        client.generate({"best": 0.6}, PLAN)
 
     assert [response.content for response in captured.value.responses] == [
         "not json",
@@ -84,6 +108,7 @@ def test_runtime_repair_returns_new_source() -> None:
         {"best": 0.6},
         GeneratedExperiment.from_dict({**repaired, "source": SOURCE}),
         "ValueError: failed",
+        plan=PLAN,
     )
     assert experiment.hypothesis == repaired["hypothesis"]
     assert len(responses) == 1
@@ -101,6 +126,7 @@ def test_rejected_runtime_repair_preserves_raw_response() -> None:
             {"best": 0.6},
             GeneratedExperiment.from_dict(failed),
             "ValueError: failed",
+            plan=PLAN,
         )
 
     assert [response.content for response in captured.value.responses] == [
@@ -123,6 +149,7 @@ def test_comment_only_runtime_repair_is_corrected() -> None:
         {"best": 0.6},
         GeneratedExperiment.from_dict(failed),
         "ValueError: failed",
+        plan=PLAN,
     )
 
     assert experiment.source == REPAIRED_SOURCE
@@ -130,17 +157,12 @@ def test_comment_only_runtime_repair_is_corrected() -> None:
 
 
 def test_pre_execution_review_rewrites_blocking_source() -> None:
-    revised = {
-        "verdict": "revise",
-        "critique": "The original returns calibrated constants rather than useful ranking scores.",
-        "hypothesis": "Produce a nonconstant score using the available rows.",
-        "expected_effect": "Improve within-user ordering.",
-        "source": REPAIRED_SOURCE,
-    }
+    revised = review_payload(REPAIRED_SOURCE)
     client = FakeClient([json.dumps(revised)])
 
     review, responses = client.review(
         {"baseline_validation": {"primary": 0.6}},
+        PLAN,
         GeneratedExperiment.from_dict(
             {
                 "hypothesis": "Use a constant prior.",
@@ -164,16 +186,41 @@ def test_pre_execution_review_rejects_comment_only_revision() -> None:
         }
     )
     comment_only = {
-        "verdict": "revise",
-        "critique": "Claimed a correction.",
+        **review_payload(SOURCE + "\n# reviewed\n"),
         "hypothesis": proposed.hypothesis,
         "expected_effect": proposed.expected_effect,
-        "source": SOURCE + "\n# reviewed\n",
     }
     corrected = {**comment_only, "source": REPAIRED_SOURCE}
     client = FakeClient([json.dumps(comment_only), json.dumps(corrected)])
 
-    review, responses = client.review({}, proposed)
+    review, responses = client.review({}, PLAN, proposed)
 
     assert review.experiment.source == REPAIRED_SOURCE
+    assert len(responses) == 2
+
+
+def test_research_plan_schema_is_corrected_before_coding() -> None:
+    client = FakeClient(["{}", json.dumps(PLAN_PAYLOAD)])
+
+    plan, responses = client.research({"recent_experiments": []})
+
+    assert plan == PLAN
+    assert len(responses) == 2
+
+
+def test_review_requires_all_structured_checks() -> None:
+    invalid = review_payload(REPAIRED_SOURCE)
+    invalid["checks"] = {"plan_fidelity": True}
+    client = FakeClient([json.dumps(invalid), json.dumps(review_payload(REPAIRED_SOURCE))])
+    proposed = GeneratedExperiment.from_dict(
+        {
+            "hypothesis": "Use a constant prior.",
+            "expected_effect": "Establish a control.",
+            "source": SOURCE,
+        }
+    )
+
+    review, responses = client.review({}, PLAN, proposed)
+
+    assert all(review.checks.values())
     assert len(responses) == 2

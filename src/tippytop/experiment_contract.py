@@ -1,134 +1,129 @@
-"""Runtime and data contract supplied to generated experiment authors."""
+"""Research environment and runtime contract supplied to the LLM stages."""
 
 from __future__ import annotations
 
 from typing import Any
 
 
+PREDICTION_COLUMNS = [
+    "date",
+    "user_id",
+    "video_id",
+    "author_id",
+    "tab",
+    "duration_ms",
+    "hourmin",
+    "time_ms",
+]
+
+TRAINING_ONLY_COLUMNS = [
+    "long_view",
+    "play_time_ms",
+    "is_click",
+    "is_like",
+    "is_follow",
+    "is_comment",
+    "is_forward",
+    "is_hate",
+    "profile_stay_time",
+    "comment_stay_time",
+    "is_profile_enter",
+]
+
+
+def research_environment() -> dict[str, Any]:
+    """Describe the scientific freedom without anchoring the model to code recipes."""
+
+    return {
+        "objective": "maximize mean(GAUC, nDCG@5) for within-user impression ranking",
+        "data": {
+            "representation": "pandas DataFrame",
+            "training_columns": [*PREDICTION_COLUMNS, *TRAINING_ONLY_COLUMNS],
+            "prediction_columns": PREDICTION_COLUMNS,
+            "training_only_rule": (
+                "labels and engagement/watch outcomes may be used for supervision or causal, "
+                "train-fitted state; predict never receives them"
+            ),
+        },
+        "evaluation": {
+            "generated_code_sees": "training rows only during fit and feature-only rows during predict",
+            "trusted_host_owns": "public-validation labels, frozen metrics, selection, and test finalization",
+        },
+        "compute": {
+            "cpu_only": True,
+            "training_rows": 1_141_112,
+            "libraries": ["numpy", "pandas", "scipy", "scikit-learn", "lightgbm"],
+            "sandbox": "networkless with bounded wall time and memory",
+        },
+        "scientific_freedom": [
+            "design custom classes, transformers, losses, ensembles, or multi-stage training",
+            "use raw DataFrame columns directly; host helpers are optional conveniences",
+            "exploit causal temporal histories and training-only outcomes when inference can reproduce the features",
+            "change representation, supervision, objective, model family, or combinations of them",
+            "write as much clean vectorized code as the substantive experiment requires",
+        ],
+        "hard_constraints": [
+            "no validation or test access inside generated code",
+            "all learned state must be returned in a pickleable model bundle",
+            "predict must return one finite continuous ranking score per row",
+            "fit/predict must be deterministic from the supplied seed",
+            "full-data work must be vectorized or batched",
+        ],
+    }
+
+
 def experiment_contract() -> dict[str, Any]:
     return {
         "response_schema": {
-            "hypothesis": "specific falsifiable research claim",
-            "expected_effect": "expected effect on mean(GAUC, nDCG@5)",
+            "hypothesis": "the plan's falsifiable research claim",
+            "expected_effect": "the plan's expected effect on mean(GAUC, nDCG@5)",
             "source": "complete Python module encoded as a JSON string",
         },
-        "required_functions": [
-            "fit(train_rows, seed)",
-            "predict(model, rows)",
-        ],
-        "data_contract": {
-            "representation": "pandas DataFrame",
-            "train_columns": [
-                "date", "user_id", "video_id", "author_id", "tab", "duration_ms",
-                "hourmin", "time_ms", "long_view", "play_time_ms", "is_click", "is_like",
-                "is_follow", "is_comment", "is_forward", "is_hate", "profile_stay_time",
-                "comment_stay_time", "is_profile_enter",
-            ],
-            "prediction_columns": [
-                "date", "user_id", "video_id", "author_id", "tab", "duration_ms",
-                "hourmin", "time_ms",
-            ],
-            "auxiliary_rule": (
-                "play_time and engagement columns exist only in training; use them as auxiliary "
-                "supervision or to fit historical aggregates, never as current-row prediction features"
-            ),
-        },
+        "required_functions": ["fit(train_rows, seed)", "predict(model, rows)"],
+        "environment": research_environment(),
         "runtime": {
-            "allowed_libraries": [
-                "numpy",
-                "pandas",
-                "scipy",
-                "scikit-learn",
-                "lightgbm",
+            "additional_allowed_imports": [
+                "safe Python standard library",
+                "joblib",
+                "threadpoolctl",
+                "typing_extensions",
                 "tippytop.models",
                 "tippytop.research",
             ],
             "fit_return": "a pickleable model, optionally (model, JSON-safe metadata)",
             "predict_return": "one finite numeric score per input row",
-            "cpu_only": True,
             "no_file_network_process_access": True,
-            "serialization": (
-                "return the model directly; the trusted host serializes it after fit returns"
+            "serialization": "return state directly; the trusted host serializes it",
+        },
+        "optional_host_api": {
+            "tippytop.research": {
+                "labels(train_rows)": "float32 long_view labels",
+                "user_ids(rows)": "string user IDs",
+                "CategoricalEncoder": (
+                    "five-field integer-ID encoder; fit_transform(train_rows), transform(rows), dimension"
+                ),
+                "TabularEncoder": (
+                    "starter-field dense encoder; ignores hour/time, auxiliary outcomes, and custom columns"
+                ),
+            },
+            "tippytop.models": {
+                "FactorizationMachine": (
+                    "integer categorical model with fit_pointwise, fit_bpr, and predict"
+                ),
+                "build_pair_indices": "same-user positive/negative row-index sampler",
+            },
+            "warning": (
+                "These helpers are optional, not the search space. Do not substitute them for the "
+                "research plan or assume added DataFrame columns flow through an encoder."
             ),
         },
-        "available_helpers": {
-            "CategoricalEncoder (import from tippytop.research)": (
-                "encoder = CategoricalEncoder(); encoder.fit_transform(train_rows) fits it and "
-                "returns an int32 [rows, 5] array; encoder.transform(rows) reuses it for "
-                "user/video/author/tab/duration-decile fields"
-            ),
-            "TabularEncoder (import from tippytop.research)": (
-                "encoder = TabularEncoder(); encoder.fit_transform(train_rows) returns out-of-fold, "
-                "leakage-safe float32 training features and retains the full-train encoder; "
-                "encoder.transform(rows) uses only saved training aggregates; it reads only the "
-                "starter date/user/video/author/tab/duration fields and ignores hourmin, time_ms, "
-                "auxiliary outcomes, and any custom columns added by generated code"
-            ),
-            "labels (import from tippytop.research)": "labels(train_rows) returns float32 long_view labels",
-            "user_ids (import from tippytop.research)": "user_ids(rows) returns string user IDs",
-            "FactorizationMachine (import from tippytop.models)": (
-                "FactorizationMachine(dimension, embedding_dim=16, learning_rate=0.001, "
-                "l2=1e-6, seed=seed); model.fit_pointwise(features, labels, epochs, batch_size, seed) "
-                "and model.fit_bpr(features, positive_indices, negative_indices, epochs, batch_size, seed) "
-                "run complete seeded minibatch training and return epoch losses; "
-                "model.step_pointwise(features, labels) updates one BCE batch; "
-                "model.step_bpr(positive_features, negative_features) updates one pairwise batch; "
-                "each step call performs exactly one Adam update, not an epoch or fit routine; "
-                "model.predict(features) returns ranking logits; "
-                "features must be integer IDs from CategoricalEncoder and dimension must equal "
-                "encoder.dimension"
-            ),
-            "build_pair_indices (import from tippytop.models)": (
-                "build_pair_indices(labels_array, user_id_list, pairs_per_positive=1, seed=seed) "
-                "returns same-user positive and negative row-index arrays"
-            ),
-        },
-        "canonical_imports": [
-            "from tippytop.research import CategoricalEncoder, TabularEncoder, labels, user_ids",
-            "from tippytop.models import FactorizationMachine, build_pair_indices",
-        ],
-        "short_tabular_path": [
-            "create a TabularEncoder and call X_train = encoder.fit_transform(train_rows)",
-            "fit any sklearn or LightGBM estimator on X_train and labels(train_rows)",
-            "return (encoder, estimator) as the model bundle",
-            "in predict, unpack the bundle and score encoder.transform(rows)",
-        ],
-        "custom_feature_path": [
-            "persist every train-fitted custom transformer or aggregate in the returned model bundle",
-            "build X_base with TabularEncoder, build X_custom separately, then pass np.column_stack([X_base, X_custom]) to the estimator",
-            "repeat the identical X_custom construction from persisted state in predict",
-            "a claimed feature has no effect unless its values are present in the final matrix passed to fit and predict",
-            "training-only outcomes cannot be direct X_custom columns; convert them into past-only or train-fitted key aggregates available at prediction",
-        ],
-        "sparse_pairwise_path": [
-            "create CategoricalEncoder and call X_train = encoder.fit_transform(train_rows)",
-            "construct FactorizationMachine with dimension=encoder.dimension, never a guessed dimension",
-            "optionally call model.fit_pointwise(X_train, y_train, epochs=1 or 2, batch_size=8192, seed=seed) before pairwise tuning",
-            "build same-user pairs with build_pair_indices(labels(train_rows), user_ids(train_rows), ...)",
-            "call model.fit_bpr(X_train, positive_indices, negative_indices, epochs=several, batch_size=8192, seed=seed)",
-            "one step_bpr call over all pairs is only one undertrained optimizer update; use explicit minibatch and epoch loops",
-            "return (encoder, model); in predict transform rows with that encoder before model.predict",
-            "do not pass TabularEncoder float features to FactorizationMachine",
-        ],
-        "implementation_guidance": [
-            "prefer one compact module under 120 lines over elaborate abstractions",
-            "use the documented short tabular path unless measured history justifies another approach",
-            "pass complete DataFrames to helper transforms; direct pandas column feature engineering is also allowed",
-            "never add a DataFrame column and then expect TabularEncoder to preserve it; concatenate custom numeric features explicitly",
-            "verify the final estimator input contains every feature named in the hypothesis",
-            "keep fit and predict vectorized enough for 1.14 million training rows",
-            "prefer reliable executable code over speculative feature engineering",
-        ],
-        "research_rules": [
-            "fit sees training rows only; never attempt to access validation or test labels",
-            "do not perform validation or model selection inside generated source",
-            "fit all encoders and aggregates on train_rows only",
-            "derive every random generator and estimator random_state from the supplied seed",
-            "prediction frames contain only the eight documented impression-time columns",
-            "never expect long_view, watch time, or engagement outcomes during prediction",
-            "pandas, pickle, and safe standard-library modules are available when useful",
-            "optimize within-user ranking, not only global calibration",
-            "use the measured history to make a substantive change rather than repeat source",
-            "do not repeat a direction identified as flat or a dead end in the research context",
+        "implementation_requirements": [
+            "implement the supplied research plan faithfully rather than falling back to a familiar baseline",
+            "persist every fitted encoder, aggregate, model, and ensemble weight needed by predict",
+            "trace every claimed feature into the actual fit matrix and reconstruct it in predict",
+            "convert training-only outcomes into valid supervision or causal/train-fitted state, never inference columns",
+            "use probability, decision, regression, or logit scores rather than predicted class labels",
+            "derive random generators and estimator random_state values from seed",
+            "avoid internal validation/model selection because generated code receives no validation labels",
         ],
     }
