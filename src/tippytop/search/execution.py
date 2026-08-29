@@ -20,7 +20,8 @@ from .journal import persist_state, update_attempt
 from .records import add_usage, response_dict, source_diff
 
 
-MAX_RUNTIME_REPAIRS = 4
+MAX_EXECUTED_REPAIRS = 8
+MAX_REJECTED_REPAIR_REQUESTS_PER_FAILURE = 4
 
 
 @dataclass(frozen=True)
@@ -58,15 +59,16 @@ def execute_with_repairs(
     execution_error: str | None = None
     artifact_dir = store.path / "checkpoints" / experiment_id
     failure_history = _prior_failure_history(recovery)
+    executed_repairs = 0
     repair_requests = 0
 
-    for repair_number in range(MAX_RUNTIME_REPAIRS + 1):
+    while True:
         store.event(
             "experiment_execution_started",
             iteration=attempt["iteration"],
             experiment_id=experiment_id,
             source_hash=experiment.source_hash,
-            repair_number=repair_number,
+            repair_number=executed_repairs,
         )
         try:
             try:
@@ -84,7 +86,7 @@ def execute_with_repairs(
                 expected_source_revision=expected_revision,
             )
             execution_error = None
-            if repair_number:
+            if executed_repairs:
                 recovery.append(
                     {
                         "experiment_id": experiment_id,
@@ -107,14 +109,14 @@ def execute_with_repairs(
                 iteration=attempt["iteration"],
                 error=execution_error,
             )
-            if repair_number >= MAX_RUNTIME_REPAIRS:
+            if executed_repairs >= MAX_EXECUTED_REPAIRS:
                 recovery.append(
                     {
                         "experiment_id": experiment_id,
                         "source_hash": experiment.source_hash,
                         "error": execution_error,
                         "diagnostics": failure["diagnostics"],
-                        "action": "repair_limit_reached_restore_previous_best",
+                        "action": "executed_repair_limit_reached_restore_previous_best",
                     }
                 )
                 attempt.update(recovery=recovery)
@@ -159,7 +161,8 @@ def execute_with_repairs(
             break
 
         repaired_ready = False
-        while repair_requests < MAX_RUNTIME_REPAIRS:
+        rejected_requests = 0
+        while rejected_requests < MAX_REJECTED_REPAIR_REQUESTS_PER_FAILURE:
             repair_requests += 1
             try:
                 store.event(
@@ -167,7 +170,8 @@ def execute_with_repairs(
                     iteration=attempt["iteration"],
                     experiment_id=experiment_id,
                     source_hash=experiment.source_hash,
-                    repair_number=repair_requests,
+                    repair_number=executed_repairs + 1,
+                    request_number=repair_requests,
                 )
                 repaired, repair_responses = llm.repair(
                     context,
@@ -182,7 +186,7 @@ def execute_with_repairs(
                 if repaired.source_hash in used_hashes:
                     raise ValueError("repair repeated source that was already attempted")
                 used_hashes.add(repaired.source_hash)
-                next_repair = repair_number + 1
+                next_repair = executed_repairs + 1
                 repaired_id = f"iteration-{attempt['iteration']:03d}-repair-{next_repair}"
                 atomic_write_text(
                     store.path / "diffs" / f"{attempt['iteration']:03d}-repair-{next_repair}.diff",
@@ -196,6 +200,7 @@ def execute_with_repairs(
                 experiment = repaired
                 experiment_id = repaired_id
                 artifact_dir = store.path / "checkpoints" / experiment_id
+                executed_repairs = next_repair
                 attempt.update(
                     experiment_id=experiment_id,
                     hypothesis=experiment.hypothesis,
@@ -227,6 +232,7 @@ def execute_with_repairs(
                 update_attempt(store, attempt)
                 break
             except (ConnectionError, ValueError) as repair_error:
+                rejected_requests += 1
                 if isinstance(repair_error, (GenerationFailure, LLMTransportFailure)):
                     responses.extend(repair_error.responses)
                     add_usage(state, repair_error.responses)
@@ -247,7 +253,8 @@ def execute_with_repairs(
                 store.event(
                     "repair_response_rejected",
                     iteration=attempt["iteration"],
-                    repair_number=repair_requests,
+                    repair_number=executed_repairs + 1,
+                    request_number=repair_requests,
                     error=execution_error,
                 )
                 attempt.update(
@@ -264,7 +271,7 @@ def execute_with_repairs(
                     "experiment_id": experiment_id,
                     "source_hash": experiment.source_hash,
                     "error": execution_error,
-                    "action": "repair_request_limit_reached_restore_previous_best",
+                    "action": "repair_response_limit_reached_restore_previous_best",
                 }
             )
             store.event(

@@ -266,3 +266,84 @@ def test_invalid_repair_response_does_not_abandon_experiment(
     assert "llm_code_repair_response_rejected" in actions
     assert "llm_code_repair_succeeded" in actions
     assert state["llm_usage"]["total_tokens"] == 8
+
+
+def test_accepted_fourth_patch_gets_a_fresh_repair_budget_after_execution_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for directory in ("checkpoints", "diffs", "transactions"):
+        (tmp_path / directory).mkdir()
+    store = RunStore(tmp_path)
+    state = {
+        "elapsed_seconds": 0.0,
+        "llm_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+    source = "def fit(train_rows, seed):\n    return 1\n\ndef predict(model, rows):\n    return [model] * len(rows)\n"
+    first_repair_source = source.replace("return 1", "return 2")
+    second_repair_source = source.replace("return 1", "return 3")
+    experiment = GeneratedExperiment("Repair it", "Complete execution", source)
+    first_repair = GeneratedExperiment("Repair it", "Complete execution", first_repair_source)
+    second_repair = GeneratedExperiment("Repair it", "Complete execution", second_repair_source)
+    plan = ResearchPlan(
+        "Repair it",
+        "Complete execution",
+        "Exercise independent response and execution repair budgets.",
+        "No prior work.",
+        (),
+        "Simple model",
+        ("Keep repairing the same experiment",),
+        ("Invalid patch response", "New runtime failure after an accepted patch"),
+    )
+    attempt = {"iteration": 1, "experiment_id": "iteration-001", "recovery": []}
+
+    class RepairClient:
+        calls = 0
+
+        def repair(self, *_args: object, **_kwargs: object):
+            self.calls += 1
+            if self.calls <= 3:
+                response = LLMResult(f"bad patch {self.calls}", {"total_tokens": 1})
+                raise GenerationFailure("invalid patch", [response])
+            if self.calls == 4:
+                return first_repair, [LLMResult("first accepted patch", {"total_tokens": 2})]
+            return second_repair, [LLMResult("second accepted patch", {"total_tokens": 3})]
+
+    executions = 0
+
+    def run(*_args: object, **_kwargs: object):
+        nonlocal executions
+        executions += 1
+        if executions <= 2:
+            from tippytop.runtime import ExperimentFailure
+
+            raise ExperimentFailure(f"runtime failure {executions}")
+        return {"valid_metrics": {"primary": 0.61}}, {"stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("tippytop.search.execution.run_experiment", run)
+    client = RepairClient()
+
+    outcome = execute_with_repairs(
+        RunConfig(),
+        store,
+        state,
+        client,  # type: ignore[arg-type]
+        {},
+        plan,
+        experiment,
+        "iteration-001",
+        {experiment.source_hash},
+        [],
+        tmp_path / "unused.pkl",
+        "revision",
+        time.monotonic() + 30,
+        time.monotonic(),
+        attempt,
+    )
+
+    assert outcome.result == {"valid_metrics": {"primary": 0.61}}
+    assert outcome.experiment.source == second_repair_source
+    assert client.calls == 5
+    assert executions == 3
+    assert outcome.experiment_id == "iteration-001-repair-2"
+    assert state["llm_usage"]["total_tokens"] == 8
