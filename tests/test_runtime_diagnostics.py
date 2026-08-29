@@ -52,6 +52,28 @@ def test_missing_column_text_outside_predict_is_not_promoted_to_environment_fact
     assert diagnostics == {}
 
 
+def test_pandas_key_error_reports_the_canonical_case_sensitive_column() -> None:
+    diagnostics = runtime_failure_diagnostics(
+        "import pandas as pd\nframe.groupby('UserID')",
+        "pandas/core/groupby/grouper.py\nKeyError: 'UserID'",
+    )
+
+    assert diagnostics["missing_dataframe_column"] == "UserID"
+    assert diagnostics["canonical_column"] == "user_id"
+    assert "case-sensitive" in diagnostics["required_action"]
+
+
+def test_pandas_key_error_explains_when_a_derived_frame_dropped_group_id() -> None:
+    diagnostics = runtime_failure_diagnostics(
+        "X_train_sparse.groupby('user_id')",
+        "pandas/core/groupby/grouper.py\nKeyError: 'user_id'",
+    )
+
+    assert diagnostics["canonical_column"] == "user_id"
+    assert "derived" in diagnostics["required_action"]
+    assert "group sizes" in diagnostics["required_action"]
+
+
 def test_infeasible_smoke_requires_vectorized_full_data_fit() -> None:
     diagnostics = runtime_failure_diagnostics(
         "for _, row in train_rows.iterrows(): pass",

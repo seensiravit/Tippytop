@@ -6,7 +6,7 @@ import inspect
 import re
 from typing import Any
 
-from ..research.data import AUXILIARY_COLUMNS
+from ..research.data import AUXILIARY_COLUMNS, PREDICTION_COLUMNS, TRAINING_COLUMNS
 
 
 _UNEXPECTED_KEYWORD = re.compile(
@@ -18,6 +18,7 @@ _GROUP_SIZE_MISMATCH = re.compile(
     r"\((?P<data_rows>\d+)\)"
 )
 _MISSING_COLUMNS = re.compile(r"Columns not found: (?P<columns>.+)")
+_PANDAS_KEY_ERROR = re.compile(r"KeyError: ['\"](?P<column>[^'\"]+)['\"]")
 _INFEASIBLE_SMOKE = re.compile(
     r"(?P<smoke_seconds>[0-9.]+)s for (?P<sample_rows>\d+) sampled rows projects to at least "
     r"(?P<projected_seconds>[0-9.]+)s for (?P<full_rows>\d+) rows"
@@ -66,6 +67,37 @@ def runtime_failure_diagnostics(source: str, error: str) -> dict[str, Any]:
                     "group or aggregate long_view, play_time_ms, click, like, or other outcomes inside predict."
                 ),
             }
+
+    key_errors = _PANDAS_KEY_ERROR.findall(error)
+    if key_errors and ("pandas" in error or ".groupby(" in source):
+        missing_column = key_errors[-1]
+        canonical_by_normalized = {
+            column.replace("_", "").lower(): column for column in TRAINING_COLUMNS
+        }
+        canonical = canonical_by_normalized.get(missing_column.replace("_", "").lower())
+        if canonical is not None and canonical != missing_column:
+            required_action = (
+                f"Generated input columns are case-sensitive: use {canonical!r}, never "
+                f"{missing_column!r}. Audit every reference and do not invent alternate spellings."
+            )
+        elif canonical is not None:
+            required_action = (
+                f"The original generated input does contain {canonical!r}; this KeyError means a derived "
+                "DataFrame dropped or renamed it. Preserve a separate query/group vector or calculate group "
+                "sizes before selecting numeric feature columns. Do not rename the field to UserID."
+            )
+        else:
+            required_action = (
+                "The missing name is not part of the generated input schema. Derive it explicitly before use "
+                "or correct the reference; do not guess a different capitalization."
+            )
+        return {
+            "missing_dataframe_column": missing_column,
+            "canonical_column": canonical,
+            "training_columns": list(TRAINING_COLUMNS),
+            "prediction_columns": list(PREDICTION_COLUMNS),
+            "required_action": required_action,
+        }
 
     group_match = _GROUP_SIZE_MISMATCH.search(error)
     if group_match is not None:
