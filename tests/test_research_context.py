@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from tippytop.artifacts import RunStore
-from tippytop.research_context import (
+from tippytop.research.context import (
     RECENT_CODE_LIMIT,
     RECENT_OUTCOME_LIMIT,
     SOURCE_CONTEXT_CHARS,

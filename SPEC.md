@@ -321,19 +321,33 @@ src/tippytop/
   config.py
   convergence.py
   doctor.py
-  experiment_contract.py
   generated.py
-  llm.py
-  research.py
-  research_context.py
-  research_data.py
-  runner.py
-  sandbox.py
-  search.py
-  search_journal.py
   starter.py
-  submission.py
-  worker.py
+  llm/
+    client.py
+    prompts.py
+    protocol.py
+    transport.py
+  research/
+    api.py
+    context.py
+    contract.py
+    data.py
+    plan.py
+  runtime/
+    runner.py
+    sandbox.py
+    worker.py
+  search/
+    execution.py
+    iteration.py
+    journal.py
+    loop.py
+    records.py
+  submission/
+    checker.py
+    finalize.py
+    report.py
   experiments/
     scoring.py
     trainer.py

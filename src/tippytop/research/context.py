@@ -8,9 +8,9 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from .artifacts import RunStore, read_json, read_jsonl
-from .generated import parse_json_object
-from .starter import evaluate
+from ..artifacts import RunStore, read_json, read_jsonl
+from ..generated import parse_json_object
+from ..starter import evaluate
 
 
 PUBLIC_PROBLEM_INSIGHTS = [

@@ -7,7 +7,7 @@ import pytest
 from tippytop.config import RunConfig
 from tippytop.generated import GeneratedExperiment
 from tippytop.llm import REVIEW_CHECKS, GenerationFailure, LLMClient, LLMResult, LLMTransportFailure
-from tippytop.research_plan import ResearchPlan
+from tippytop.research import ResearchPlan
 
 
 SOURCE = """import numpy as np

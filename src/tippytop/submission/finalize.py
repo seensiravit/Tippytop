@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import csv
 import fcntl
 import hashlib
-import io
-import subprocess
-import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 
-from .artifacts import (
+from ..artifacts import (
     RunStore,
     assert_source_revision,
     atomic_save_npy,
@@ -23,55 +19,11 @@ from .artifacts import (
     read_json,
     utc_now,
 )
-from .config import RunConfig
-from .experiments import predict_checkpoint
-from .starter import STARTER_DIR, evaluate, load_splits
-
-
-HEADER = ["row_id", "user_id", "video_id", "score"]
-OFFICIAL_VALID_PRIMARY = 0.6016
-OFFICIAL_TEST_PRIMARY = 0.5946
-OFFICIAL_TEST_STD = 0.0008
-ORACLE_TEST_PRIMARY = 0.8645
-
-
-def write_submission(path: Path, rows: Sequence[tuple[Any, ...]], scores: Sequence[float]) -> None:
-    if len(rows) != len(scores):
-        raise ValueError(f"row and score counts differ: {len(rows)} != {len(scores)}")
-    rendered = io.StringIO(newline="")
-    writer = csv.writer(rendered)
-    writer.writerow(HEADER)
-    # row_id is the original split order, which the organizer checker requires exactly.
-    for row_id, (row, score) in enumerate(zip(rows, scores, strict=True)):
-        value = float(score)
-        if value != value or value in (float("inf"), float("-inf")):
-            raise ValueError(f"score at row {row_id} is not finite")
-        writer.writerow([row_id, row[1], row[2], f"{value:.9g}"])
-    atomic_write_text(path, rendered.getvalue())
-
-
-def validate_with_starter(path: Path, data_dir: Path) -> str:
-    command = [
-        sys.executable,
-        str(STARTER_DIR / "submit.py"),
-        str(path.resolve()),
-        "--data_dir",
-        str(data_dir.resolve()),
-        "--split",
-        "test",
-        "--check",
-    ]
-    completed = subprocess.run(
-        command,
-        cwd=STARTER_DIR,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(f"starter submission validation failed: {completed.stderr or completed.stdout}")
-    return completed.stdout.strip()
+from ..config import RunConfig
+from ..experiments import predict_checkpoint
+from ..starter import evaluate, load_splits
+from .checker import validate_with_starter, write_submission
+from .report import render_report
 
 
 def finalize_run(store: RunStore, config: RunConfig, state: dict[str, Any]) -> dict[str, Any]:
@@ -208,7 +160,7 @@ def _finalize_locked(store: RunStore, config: RunConfig, state: dict[str, Any]) 
         "gpu_hours": 0,
     }
     store.write_json("results.json", results)
-    atomic_write_text(store.path / "report.md", _render_report(results))
+    atomic_write_text(store.path / "report.md", render_report(results))
     transaction.update(status="completed", completed_at=utc_now())
     store.write_json("finalization.json", transaction)
     store.event("run_finalized", test_metrics=normalized_metrics, submission=str(submission_path))
@@ -218,52 +170,6 @@ def _finalize_locked(store: RunStore, config: RunConfig, state: dict[str, Any]) 
         "validation_output": validation_output,
         "reused": False,
     }
-
-
-def _render_report(results: dict[str, Any]) -> str:
-    baseline = results.get("baseline_valid") or {}
-    valid = results["best_validation"]
-    test = results["test"]
-    reproduced_delta = float(valid["primary"]) - float(baseline.get("primary", OFFICIAL_VALID_PRIMARY))
-    official_valid_delta = float(valid["primary"]) - OFFICIAL_VALID_PRIMARY
-    official_test_delta = float(test["primary"]) - OFFICIAL_TEST_PRIMARY
-    oracle_gap = ORACLE_TEST_PRIMARY - float(test["primary"])
-    return f"""# Tippytop Run Report
-
-## Outcome
-
-| Result | GAUC | nDCG@5 | Primary |
-|---|---:|---:|---:|
-| Reproduced FM validation | {baseline.get('GAUC', 0):.4f} | {baseline.get('nDCG@5', 0):.4f} | {baseline.get('primary', 0):.4f} |
-| Best validation | {valid['GAUC']:.4f} | {valid['nDCG@5']:.4f} | {valid['primary']:.4f} |
-| One-time test | {test['GAUC']:.4f} | {test['nDCG@5']:.4f} | {test['primary']:.4f} |
-
-Validation delta over reproduced FM: **{reproduced_delta:+.4f}**
-
-Validation delta over official FM ({OFFICIAL_VALID_PRIMARY:.4f}): **{official_valid_delta:+.4f}**
-
-Test delta over published FM mean ({OFFICIAL_TEST_PRIMARY:.4f} ± {OFFICIAL_TEST_STD:.4f}): **{official_test_delta:+.4f}**
-
-Gap to oracle ({ORACLE_TEST_PRIMARY:.4f}): **{oracle_gap:.4f}**
-
-## Run Summary
-
-- Best experiment: `{results['best_experiment']}`
-- Stopping reason: `{results['stopping_reason']}`
-- Iterations: {results['iterations']}
-- Agent wall-clock: {results['elapsed_seconds']:.1f} seconds
-- Search wall-clock: {results['search_elapsed_seconds']:.1f} seconds
-- Finalization wall-clock: {results['finalization_elapsed_seconds']:.1f} seconds
-- LLM tokens: {results['llm_usage'].get('total_tokens', 0)}
-- GPU-hours: 0
-- Manual interventions: {results['manual_interventions']}
-- Submission: `{results['submission']}`
-
-See `iterations.jsonl` and `events.jsonl` for the hypothesis, configuration diff, metrics, and
-recovery record for every iteration.
-"""
-
-
 @contextmanager
 def _finalization_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)

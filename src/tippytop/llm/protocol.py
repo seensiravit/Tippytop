@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .generated import GeneratedExperiment, parse_json_object
+from ..generated import GeneratedExperiment, parse_json_object
 
 
 REVIEW_CHECKS = (

@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .experiment_contract import experiment_contract, research_environment
-from .generated import GeneratedExperiment
-from .research_plan import ResearchPlan
+from ..generated import GeneratedExperiment
+from ..research import ResearchPlan
+from ..research.contract import experiment_contract, research_environment
 
 
 def research_messages(context: dict[str, Any]) -> list[dict[str, str]]:

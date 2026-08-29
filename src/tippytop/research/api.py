@@ -7,8 +7,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .models.trees.features import TreeFeatureEncoder
-from .research_data import PREDICTION_COLUMNS
+from ..models.trees.features import TreeFeatureEncoder
+from .data import PREDICTION_COLUMNS
 
 
 class CategoricalEncoder:

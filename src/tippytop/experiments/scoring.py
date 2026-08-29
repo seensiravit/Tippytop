@@ -61,8 +61,8 @@ def predict_checkpoint(
 ) -> np.ndarray:
     if checkpoint_path.is_dir():
         # Generated checkpoints are directories; trusted built-ins use explicit file formats.
-        from tippytop.sandbox import predict_generated
-        from tippytop.research_data import load_prediction_frame
+        from tippytop.runtime import predict_generated
+        from tippytop.research.data import load_prediction_frame
 
         if data_dir is None:
             raise ValueError("data_dir is required to replay a generated checkpoint")

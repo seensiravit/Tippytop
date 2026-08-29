@@ -7,12 +7,12 @@ import pytest
 
 from tippytop.artifacts import RunStore, read_jsonl
 from tippytop.llm import LLMResult
-from tippytop.search_iteration import (
+from tippytop.search.records import (
     REFLECTION_CODE_CHARS,
-    _reflect,
-    _validation_diagnostics,
+    reflect,
+    validation_diagnostics,
 )
-from tippytop.search_journal import commit_iteration, recover_transactions
+from tippytop.search.journal import commit_iteration, recover_transactions
 
 
 def test_iteration_transaction_recovers_state_and_log(tmp_path: Path) -> None:
@@ -48,7 +48,7 @@ def test_reflection_bounds_generated_code_diff(tmp_path: Path) -> None:
         "code_diff": "prefix\n" + "x" * 20_000 + "\nsuffix",
     }
 
-    result = _reflect(
+    result = reflect(
         client,  # type: ignore[arg-type]
         {"baseline_valid": {"primary": 0.6}},
         record,
@@ -73,7 +73,7 @@ def test_validation_diagnostics_identify_repeated_outcome() -> None:
     baseline = {"GAUC": 0.66, "nDCG@5": 0.54, "primary": 0.60}
     repeated = {"GAUC": 0.65, "nDCG@5": 0.53, "primary": 0.59}
 
-    diagnostics = _validation_diagnostics(
+    diagnostics = validation_diagnostics(
         repeated,
         baseline,
         baseline,

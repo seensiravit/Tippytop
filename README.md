@@ -60,19 +60,14 @@ Important modules:
 | Path | Responsibility |
 |---|---|
 | `src/tippytop/agent.py` | Run lifecycle: preflight, harness, baseline, search, and finalization |
-| `src/tippytop/search.py` | Generated-source search, repair, selection, and convergence |
-| `src/tippytop/search_journal.py` | Crash-consistent iteration transactions and recovery |
-| `src/tippytop/llm.py` | OpenAI-compatible source generation, repair, and reflection |
-| `src/tippytop/experiment_contract.py` | Data, helper, and runtime contract supplied to the LLM |
+| `src/tippytop/search/` | Search lifecycle, iteration execution/repair, records, and crash recovery |
+| `src/tippytop/llm/` | OpenAI transport, stage orchestration, prompts, and protocol types |
 | `src/tippytop/generated.py` | Strict experiment schema, source hashing, and AST checks |
-| `src/tippytop/sandbox.py` | Bubblewrap namespace and resource isolation |
-| `src/tippytop/worker.py` | Sandboxed smoke, training, and checkpoint prediction worker |
-| `src/tippytop/research_data.py` | Label-safe rich train and feature-only prediction frames |
-| `src/tippytop/research_context.py` | Bounded validation-only research memory |
-| `src/tippytop/research.py` | Small train-fitted helpers available to generated code |
+| `src/tippytop/runtime/` | Trusted runner, bubblewrap sandbox, and generated-code worker |
+| `src/tippytop/research/` | Public helpers, rich data boundary, context, plans, and LLM contract |
 | `src/tippytop/models/` | Reusable linear, MF, FM, FFM, sampling, and tree components |
 | `src/tippytop/experiments/` | Trusted reference trainers and checkpoint scoring |
-| `src/tippytop/submission.py` | Idempotent test scoring and organizer CSV validation |
+| `src/tippytop/submission/` | Transactional finalization, CSV checking, and report rendering |
 
 The reusable model implementations are a research library, not a candidate list. Generated source
 may import them or independently use NumPy, SciPy, scikit-learn, or LightGBM.

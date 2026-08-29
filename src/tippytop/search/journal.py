@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .artifacts import RunStore, atomic_write_jsonl, read_json, read_jsonl, utc_now
+from ..artifacts import RunStore, atomic_write_jsonl, read_json, read_jsonl, utc_now
 
 
 def persist_state(store: RunStore, state: dict[str, Any], wall_started: float) -> None:

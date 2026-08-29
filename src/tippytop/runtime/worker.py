@@ -15,11 +15,11 @@ from typing import Any
 
 import numpy as np
 
-from .artifacts import atomic_write_json, read_json
-from .experiments import train_parametric
-from .generated import GeneratedExperiment
-from .research_data import prediction_view
-from .starter import load_splits
+from ..artifacts import atomic_write_json, read_json
+from ..experiments import train_parametric
+from ..generated import GeneratedExperiment
+from ..research.data import prediction_view
+from ..starter import load_splits
 
 
 REFERENCE_PARAMETERS: dict[str, int | float] = {
@@ -36,7 +36,7 @@ GENERATED_MODULE = "_tippytop_generated_experiment"
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("usage: python -m tippytop.worker REQUEST_JSON RESULT_JSON", file=sys.stderr)
+        print("usage: python -m tippytop.runtime.worker REQUEST_JSON RESULT_JSON", file=sys.stderr)
         return 2
     request_path, result_path = map(Path, sys.argv[1:])
     try:

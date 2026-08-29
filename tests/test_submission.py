@@ -65,7 +65,7 @@ def test_finalize_run_scores_test_once_and_reuses_result(
     store.write_json("state.json", state)
 
     monkeypatch.setattr(
-        "tippytop.submission.load_splits",
+        "tippytop.submission.finalize.load_splits",
         lambda _data_dir: {"train": [], "valid": [], "test": test_rows},
     )
 
@@ -73,13 +73,13 @@ def test_finalize_run_scores_test_once_and_reuses_result(
         calls["predict"] += 1
         return np.asarray([0.9, 0.1], dtype=np.float32)
 
-    monkeypatch.setattr("tippytop.submission.predict_checkpoint", predict)
+    monkeypatch.setattr("tippytop.submission.finalize.predict_checkpoint", predict)
     monkeypatch.setattr(
-        "tippytop.submission.evaluate",
+        "tippytop.submission.finalize.evaluate",
         lambda *_args: {"GAUC": 0.8, "nDCG@5": 0.7, "primary": 0.75, "rows": 2, "users": 2},
     )
     monkeypatch.setattr(
-        "tippytop.submission.validate_with_starter",
+        "tippytop.submission.finalize.validate_with_starter",
         lambda *_args: "Submission format OK",
     )
 
@@ -120,7 +120,7 @@ def test_finalize_run_refuses_to_repeat_interrupted_test_evaluation(
     calls = {"predict": 0, "evaluate": 0}
 
     monkeypatch.setattr(
-        "tippytop.submission.load_splits",
+        "tippytop.submission.finalize.load_splits",
         lambda _data_dir: {"train": [], "valid": [], "test": rows},
     )
 
@@ -132,8 +132,8 @@ def test_finalize_run_refuses_to_repeat_interrupted_test_evaluation(
         calls["evaluate"] += 1
         raise RuntimeError("simulated crash after evaluation began")
 
-    monkeypatch.setattr("tippytop.submission.predict_checkpoint", predict)
-    monkeypatch.setattr("tippytop.submission.evaluate", interrupted_evaluate)
+    monkeypatch.setattr("tippytop.submission.finalize.predict_checkpoint", predict)
+    monkeypatch.setattr("tippytop.submission.finalize.evaluate", interrupted_evaluate)
 
     with pytest.raises(RuntimeError, match="simulated crash"):
         finalize_run(store, config, state)

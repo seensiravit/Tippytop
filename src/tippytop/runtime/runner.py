@@ -10,18 +10,18 @@ from typing import Any
 
 import numpy as np
 
-from .artifacts import (
+from ..artifacts import (
     HostRevisionChanged,
     assert_source_revision,
     atomic_write_json,
     atomic_write_text,
     read_json,
 )
-from .config import RunConfig
-from .generated import GeneratedExperiment
-from .research_data import load_prediction_frame
+from ..config import RunConfig
+from ..generated import GeneratedExperiment
+from ..research.data import load_prediction_frame
+from ..starter import evaluate, load_splits
 from .sandbox import SandboxFailure, predict_generated, run_worker_sandboxed
-from .starter import evaluate, load_splits
 
 
 class ExperimentFailure(RuntimeError):
@@ -220,7 +220,7 @@ def _run_trusted_worker(
     command = [
         sys.executable,
         "-m",
-        "tippytop.worker",
+        "tippytop.runtime.worker",
         str(request_path.resolve()),
         str(result_path.resolve()),
     ]

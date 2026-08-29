@@ -15,11 +15,11 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
-from .research_data import load_research_frames, prediction_view
-from .starter import STARTER_DIR
+from ..research.data import load_research_frames, prediction_view
+from ..starter import STARTER_DIR
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 TEMP_ROOT = Path("/tmp/opencode")
 
 
@@ -41,8 +41,8 @@ def prepare_research_data(
     temporary = path.with_suffix(path.suffix + ".tmp")
     frames = load_research_frames(data_dir)
     if summary_path is not None:
-        from .artifacts import atomic_write_json
-        from .research_data import AUXILIARY_COLUMNS, PREDICTION_COLUMNS
+        from ..artifacts import atomic_write_json
+        from ..research.data import AUXILIARY_COLUMNS, PREDICTION_COLUMNS
 
         train = frames["train"]
         atomic_write_json(
@@ -78,7 +78,7 @@ def predict_generated(
     manifest_path = checkpoint_dir / "manifest.json"
     if not manifest_path.is_file():
         raise ValueError(f"generated checkpoint manifest is missing: {checkpoint_dir}")
-    from .artifacts import atomic_write_json, read_json
+    from ..artifacts import atomic_write_json, read_json
 
     manifest = read_json(manifest_path)
     source_hash = manifest.get("source_hash")
@@ -171,7 +171,7 @@ def run_worker_sandboxed(
             str(writable),
             sys.executable,
             "-m",
-            "tippytop.worker",
+            "tippytop.runtime.worker",
             str(request_path.resolve()),
             str(result_path.resolve()),
         ]
