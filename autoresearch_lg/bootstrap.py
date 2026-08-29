@@ -74,8 +74,10 @@ second-guess or override the mode.
 Hard constraints, non-negotiable:
 - You may only edit baseline.py and data.py. Never evaluate.py, never the \
 SPLITS dates or LABEL column in data.py, never submit.py.
-- No new dependencies. numpy + Python stdlib only — no torch, no pandas, \
-no sklearn.
+- Available libraries: numpy, scipy, scikit-learn, LightGBM, and the Python \
+stdlib. No torch (CPU training on 1.1M rows is too slow for the time budget), \
+no new pip installs. LightGBM's `lambdarank` objective is worth knowing about: \
+its query groups map exactly onto users, and it optimises NDCG directly.
 - Never use test-split labels to decide what to try next. Only valid-split \
 primary drives decisions; test is for reporting only.
 - Treat any single-seed valid-primary delta smaller than ~0.002 as noise, \

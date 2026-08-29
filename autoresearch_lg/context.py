@@ -58,9 +58,43 @@ HEADROOM = [
         ),
     },
     {
+        "id": "gbdt_lambdarank",
+        "keywords": ["lightgbm", "lambdarank", "gbdt", "boosting", "lambdamart"],
+        "note": (
+            "LightGBM with objective='lambdarank': query groups map exactly "
+            "onto users, and it optimises NDCG directly by weighting each pair "
+            "by the metric change a swap would cause. ~7 impressions/user is "
+            "squarely its regime. Needs real per-row features to split on, so "
+            "it pairs naturally with train-only item aggregates. Untried."
+        ),
+    },
+    {
+        "id": "item_aggregates",
+        "keywords": ["aggregate", "target encoding", "item statistic", "play_progress",
+                     "count feature", "smoothing"],
+        "note": (
+            "Train-only per-video aggregates: long_view rate, mean play "
+            "progress, impression count, smoothed toward the global mean for "
+            "rare videos. These are ITEM-side, so they vary within a user's "
+            "list and CAN move a within-user ranking. Note the 'static features "
+            "yield nothing' result is narrower than it reads: "
+            "ablation_features.py only opens video_features_basic_pure.csv and "
+            "only tests 4 categorical IDs, which are redundant given video_id. "
+            "Continuous engagement rates were never tested. Compute these from "
+            "the TRAIN split yourself rather than reading "
+            "video_features_statistic_pure.csv, whose aggregation window is "
+            "unknown and may span the test period."
+        ),
+    },
+    {
         "id": "time_and_drift",
-        "keywords": ["hourmin", "date", "drift", "time feature", "temporal"],
-        "note": "Time features (hourmin, date) and train->test distribution drift.",
+        "keywords": ["hourmin", "date", "drift", "time feature", "temporal", "position"],
+        "note": (
+            "Time features and drift. time_ms is unused and gives WITHIN-SESSION "
+            "POSITION when sorted per user-day — position bias is one of the "
+            "largest effects in any feed and varies within a user, so it can "
+            "move the ranking. hourmin crossed with duration is a second angle."
+        ),
     },
     {
         "id": "unbiased_eval",
@@ -79,7 +113,25 @@ Dataset-derived edges (judge-checkable, not in any shared README):
   9.2% all-positive (nDCG pinned to 1). Consider upweighting movable users in
   the TRAINING loss only — never touch how eval scores them, that's fixed.
 - Eval lists are short (~7 impressions/user) — listwise objectives are cheap here.
-- Seed averaging on the final submission is cheap variance insurance."""
+- Seed averaging on the final submission is cheap variance insurance.
+
+Measured, and it changes how you must READ a ranking-loss result:
+- A listwise/pairwise loss needs a user's rows in one batch. That BATCHING alone
+  costs about -0.0023 valid primary, measured with the objective held fixed at
+  pointwise. The ranking objective itself is worth +0.0010..+0.0017 (4 of 4
+  configs). So a CORRECT ranking loss compared naively against the FM baseline
+  looks like a failure. If you try one, also run a pointwise control at the SAME
+  batching and compare against that, not against the baseline.
+  (Cause: Adam normalises per-parameter, so a user embedding gets one step per
+  epoch when grouped instead of ~43 when rows are shuffled.)
+- Single-model spread over 10 seeds: valid 0.6015 +- 0.0006, test 0.5949 +-
+  0.0008. Seed 42 alone gives 0.6019/0.5957 — a full sigma high. Over many
+  iterations, best-of-N on that noise manufactures apparent gains, so re-run
+  anything that clears epsilon at 2-3 seeds before believing it.
+- Rank-averaging several models gives a replicated +0.0013 (two disjoint seed
+  groups, monotonic in ensemble size). Real, but below the 0.002 bar — and it
+  does not compound, because every member shares the same model-class bias.
+  Mixing different model FAMILIES is the version that should compound."""
 
 
 def _closed_concept_text(state) -> str:
@@ -143,13 +195,17 @@ def build_context(state) -> str:
             )
         lines.append("")
 
+    # Validation only. test_primary is deliberately NOT shown: CONSTRAINTS tells
+    # the model never to let test decide what to try next, and the brief is
+    # explicit that the agent develops on train + validation alone. It still goes
+    # into runs.jsonl via critic.write_log — reporting it is required, feeding it
+    # back into the proposal prompt is not.
     lines.append(f"Recent iterations (full detail, most recent last):")
     for h in recent:
         err = f" error={h['error'][:200]}" if h.get("error") else ""
         lines.append(
             f"  #{h['iteration']} [{h['mode']}/{h['outcome']}] {h['concept_id']}: "
-            f"{h['description']} -> valid={h['metrics']['valid_primary']:.4f} "
-            f"test={h['metrics']['test_primary']:.4f}{err}"
+            f"{h['description']} -> valid={h['metrics']['valid_primary']:.4f}{err}"
         )
 
     lines.append(f"\nBest valid primary so far: {state['best_valid_primary']:.6f} "
