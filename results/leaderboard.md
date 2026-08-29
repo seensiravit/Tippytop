@@ -12,3 +12,4 @@ baseline; a change is real only if Δvalid > +0.002 (noise band).
 | — | ref | oracle ceiling | 1.0000 | 0.7289 | 0.8645 | 0.8645 | perfect ranking |
 
 **Targets:** beat FM 0.5946; measure progress against oracle 0.8645 (headroom ≈ 0.27).
+| 2026-08-29 | auto | fm (seed=42) | 0.6674 | 0.5363 | 0.6019 | 0.5957 |  |

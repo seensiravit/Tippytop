@@ -5,13 +5,19 @@ measure progress against the oracle ceiling (0.8645). Full brief in [`task.md`](
 
 **New here? Start with [`docs/tutorial.md`](docs/tutorial.md).**
 
+The **autonomous ML research agent** (Track 2 core) lives in `src/tippytop/agent/` —
+an LLM that writes/edits a `solution.py` each iteration, runs it on valid, and keeps the
+best. See [`docs/agent.md`](docs/agent.md).
+
 ## Quick start
 ```bash
 pip install -r requirements.txt
 # download data into the vendored kit:
 bash scripts/download_data.sh          # or: powershell scripts/download_data.ps1
-python -m pytest tests/ -v             # sanity: random ~= 0.475
-python scripts/run_experiment.py --model fm
+python -m pytest tests/ -v             # sanity: random ~= 0.475 + agent tests
+
+python scripts/run_experiment.py --model fm     # run the FM baseline
+python -m tippytop agent --llm mock --max-iters 3   # agent loop, offline (no API)
 ```
 
 ## Layout

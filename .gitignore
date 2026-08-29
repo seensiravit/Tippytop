@@ -2,6 +2,11 @@
 kuairand-starter-kit/kuairand-starter-kit/KuaiRand-Pure/
 kuairand-starter-kit/kuairand-starter-kit/*.tar.gz
 
+# Secrets — never commit API keys
+.env
+.env.*
+!.env.example
+
 # Generated submissions & run artifacts (keep the dir, not the files)
 results/submissions/*.csv
 results/runs/

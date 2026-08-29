@@ -46,6 +46,10 @@ src/tippytop/
   models/random_model.py     random baseline — DONE
   training/runner.py         shared train/evaluate loop + leaderboard logging
   submission.py              write_submission + read_submission (validation)
+  agent/                     autonomous ML research agent (Track 2 core) — DONE machinery
+    orchestrator.py          AIDE-style loop: seed -> improve/debug -> score valid -> finalize
+    llm/{base,mock,gemini}.py  client ABC; offline mock; stdlib-only Gemini REST
+    {prompts,parsing,contract,guard,sandbox,scoring,convergence,journal,cli}.py
 scripts/                     download_data.{sh,ps1}, run_experiment.py, make_submission.py
 results/leaderboard.md       shared scoreboard
 tests/test_harness.py        random ≈ 0.475 sanity check
@@ -63,7 +67,9 @@ python -m tippytop run    --model fm             # train + evaluate valid & test
 python -m tippytop submit --model fm --split test --out results/submissions/fm_test.csv
 python -m tippytop check  <csv> --split test     # validate format/alignment
 python -m tippytop score  <csv> --split valid    # validate + score (valid only)
-python -m pytest tests/ -v                        # harness sanity
+python -m tippytop agent  --llm mock --max-iters 3   # autonomous agent, offline (no API)
+python -m tippytop agent  --llm gemini --max-iters 50  # needs GEMINI_API_KEY env var
+python -m pytest tests/ -v                        # harness + agent sanity (26 tests)
 ```
 
 Without an install, use the wrappers: `python scripts/run_experiment.py --model fm`
@@ -95,3 +101,7 @@ mismatch, no new data, start here), (2) user behavior sequences, (3) multi-task
 - Data (`KuaiRand-Pure/`), `*.egg-info/`, and `results/submissions/*.csv` are
   git-ignored — don't commit them.
 - Verified reproductions: random test primary 0.4754; FM test primary ~0.595 (seed 0).
+- Agent (`tippytop.agent`): dependency-free (stdlib `urllib` for Gemini REST, no SDK).
+  Default model `gemini-3.5-flash-lite` (the API retired `gemini-2.5-flash-lite` for new
+  keys). Key via `GEMINI_API_KEY` env var — never commit it. Run artifacts land in
+  `results/runs/<run_id>/` (git-ignored). See `docs/agent.md`.
