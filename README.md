@@ -63,13 +63,24 @@ uv run langgraph dev --no-browser
 It prints an API URL and a Studio UI URL; ctrl-click the Studio one. Then:
 
 1. In the **Input** panel, click **View Raw**
-2. Replace the contents with `{}`
+2. Replace the contents with `{"max_iterations": 2}`
 3. **Submit**
 
 The form shows every state field as "Required", but you do not fill them in —
-the `bootstrap` node exists precisely so an empty `{}` works, filling in repo
-root, data path and config defaults. Override selectively if you want, e.g.
-`{"model": "claude-opus-5", "max_iterations": 5}`.
+the `bootstrap` node exists precisely so a near-empty input works, filling in
+repo root, data path and config defaults.
+
+> ⚠️ **Always pass `max_iterations` in Studio.** A bare `{}` inherits the
+> defaults — **50 iterations or 6 hours** — and Studio has no equivalent of the
+> CLI's `--max-iterations` flag, so there is nothing to remind you. It will keep
+> calling the LLM unattended. Roughly $0.08 per iteration on `claude-sonnet-5`,
+> so a forgotten `{}` is ~$4 and several hours.
+
+Other fields override the same way, e.g.
+`{"max_iterations": 5, "model": "claude-opus-5"}`.
+
+To stop a run: use the stop control on the thread, or Ctrl+C the
+`langgraph dev` terminal. Completed iterations are already durable on disk.
 
 Nodes light up as they run and you can click any of them to inspect the state
 going in and out, which is the reason to prefer Studio while learning the loop.
