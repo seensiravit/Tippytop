@@ -1,0 +1,359 @@
+"""Regenerates results_dashboard.html from results.tsv + concepts.json.
+
+Static snapshot, not a server: every call to `write_dashboard` re-embeds the
+full results.tsv and concepts.json as inline JSON and rewrites the file.
+Safe to open the output via file:// while a run is in progress; just refresh
+after each iteration (critic's write_log regenerates it automatically after
+every experiment).
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from . import tools
+
+FM_BASELINE_VALID = 0.6016
+FM_BASELINE_TEST = 0.5946
+ORACLE_CEILING_VALID = 0.8484
+ORACLE_CEILING_TEST = 0.8645
+
+_TEMPLATE = """<!doctype html>
+<meta charset="utf-8">
+<title>autoresearch dashboard</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline-ink:   #c3c2b7;
+    --series-1:       #2a78d6;
+    --status-good:    #0ca30c;
+    --status-serious: #ec835a;
+    --status-critical:#d03b3b;
+    --status-muted:   #898781;
+    --border:         rgba(11,11,11,0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline-ink:   #383835;
+      --series-1:       #3987e5;
+      --status-good:    #0ca30c;
+      --status-serious: #ec835a;
+      --status-critical:#d03b3b;
+      --status-muted:   #898781;
+      --border:         rgba(255,255,255,0.10);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page:           #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline-ink:   #383835;
+    --series-1:       #3987e5;
+    --status-good:    #0ca30c;
+    --status-serious: #ec835a;
+    --status-critical:#d03b3b;
+    --status-muted:   #898781;
+    --border:         rgba(255,255,255,0.10);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 32px 24px 64px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--text-secondary); margin: 0 0 24px; }
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 20px;
+    max-width: 980px;
+  }
+  .stats { display: flex; gap: 32px; flex-wrap: wrap; }
+  .stat .label { color: var(--text-secondary); font-size: 12px; }
+  .stat .value {
+    font-size: 32px; font-weight: 600; font-variant-numeric: proportional-nums;
+  }
+  .stat .delta { font-size: 12px; margin-top: 2px; }
+  .delta.up { color: var(--status-good); }
+  .delta.down { color: var(--status-critical); }
+  svg { display: block; overflow: visible; }
+  .gridline { stroke: var(--gridline); stroke-width: 1; }
+  .refline { stroke: var(--baseline-ink); stroke-width: 1; stroke-dasharray: 3 3; }
+  .refline-label { fill: var(--text-muted); font-size: 11px; }
+  .axis-label { fill: var(--text-muted); font-size: 11px; }
+  .line { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .dot { stroke: var(--surface-1); stroke-width: 2; cursor: pointer; }
+  .legend { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+  #tooltip {
+    position: absolute; pointer-events: none; opacity: 0;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.15); transition: opacity 0.1s;
+    max-width: 260px;
+  }
+  table { border-collapse: collapse; width: 100%; max-width: 980px; }
+  th, td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--gridline);
+    font-size: 12.5px;
+  }
+  th { color: var(--text-secondary); font-weight: 500; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  .status-pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+  }
+  .status-keep, .status-improved { background: color-mix(in srgb, var(--status-good) 18%, transparent); color: var(--status-good); }
+  .status-discard, .status-failed { background: color-mix(in srgb, var(--status-muted) 18%, transparent); color: var(--text-secondary); }
+  .status-crash, .status-error { background: color-mix(in srgb, var(--status-critical) 18%, transparent); color: var(--status-critical); }
+  .status-active { background: color-mix(in srgb, var(--series-1) 18%, transparent); color: var(--series-1); }
+  .status-closed { background: color-mix(in srgb, var(--text-muted) 18%, transparent); color: var(--text-secondary); }
+  .mode-pill {
+    display: inline-block; padding: 1px 6px; border-radius: 999px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+    background: var(--surface-2, color-mix(in srgb, var(--text-muted) 12%, transparent));
+    color: var(--text-secondary);
+  }
+  .hyp-row {
+    padding: 12px 0; border-bottom: 1px solid var(--gridline);
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .hyp-row:last-child { border-bottom: none; }
+  .hyp-head { display: flex; align-items: center; gap: 8px; }
+  .hyp-id { font-variant-numeric: tabular-nums; color: var(--text-muted); font-size: 12px; }
+  .hyp-statement { font-weight: 500; }
+  .hyp-meta { color: var(--text-secondary); font-size: 12px; }
+  .hyp-empty { color: var(--text-secondary); font-size: 13px; }
+</style>
+<body>
+  <h1>autoresearch — KuaiRand-Pure</h1>
+  <p class="sub">__SUBTITLE__</p>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat">
+        <div class="label">Best valid primary</div>
+        <div class="value" id="best-value">—</div>
+        <div class="delta" id="best-delta"></div>
+      </div>
+      <div class="stat">
+        <div class="label">Experiments run</div>
+        <div class="value" id="n-runs">—</div>
+        <div class="delta" id="n-breakdown" style="color:var(--text-secondary)"></div>
+      </div>
+      <div class="stat">
+        <div class="label">Oracle ceiling (valid)</div>
+        <div class="value" style="font-size:20px">0.8484</div>
+        <div class="delta" style="color:var(--text-secondary)">headroom, not 1.0 — see README</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <svg id="chart" width="900" height="320" viewBox="0 0 900 320"></svg>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:var(--status-good)"></span>keep</span>
+      <span class="legend-item"><span class="legend-dot" style="background:var(--status-muted)"></span>discard</span>
+      <span class="legend-item"><span class="legend-dot" style="background:var(--status-critical)"></span>crash</span>
+      <span class="legend-item"><span style="width:14px;height:0;border-top:1px dashed var(--baseline-ink)"></span>FM baseline / oracle ceiling</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;text-transform:uppercase;letter-spacing:0.04em">Concepts</div>
+    <div id="concepts-list"></div>
+  </div>
+
+  <div class="card">
+    <table id="results-table">
+      <thead>
+        <tr><th>#</th><th>checkpoint</th><th class="num">valid</th><th class="num">test</th><th class="num">wall (s)</th><th>status</th><th>description</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div id="tooltip"></div>
+
+<script>
+const DATA = __DATA_JSON__;
+const CONCEPTS = __CONCEPTS_JSON__;
+const FM_BASELINE_VALID = __FM_BASELINE__;
+const ORACLE_CEILING_VALID = __ORACLE_CEILING__;
+
+const statusColor = s => ({keep: 'var(--status-good)', discard: 'var(--status-muted)', crash: 'var(--status-critical)'})[s];
+
+function renderStats() {
+  const kept = DATA.filter(d => d.status === 'keep');
+  const best = kept.length ? Math.max(...kept.map(d => d.valid_primary)) : (DATA[0] ? DATA[0].valid_primary : 0);
+  document.getElementById('best-value').textContent = best.toFixed(4);
+  const delta = best - FM_BASELINE_VALID;
+  const deltaEl = document.getElementById('best-delta');
+  deltaEl.className = 'delta ' + (delta >= 0 ? 'up' : 'down');
+  deltaEl.textContent = (delta >= 0 ? '+' : '') + delta.toFixed(4) + ' vs FM baseline (0.6016)';
+  document.getElementById('n-runs').textContent = DATA.length;
+  const nKeep = DATA.filter(d => d.status === 'keep').length;
+  const nDiscard = DATA.filter(d => d.status === 'discard').length;
+  const nCrash = DATA.filter(d => d.status === 'crash').length;
+  document.getElementById('n-breakdown').textContent = `${nKeep} kept · ${nDiscard} discarded · ${nCrash} crashed`;
+}
+
+function renderChart() {
+  const svg = document.getElementById('chart');
+  const W = 900, H = 320, padL = 56, padR = 20, padT = 16, padB = 32;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  if (DATA.length === 0) {
+    svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" class="axis-label">no experiments logged yet</text>`;
+    return;
+  }
+  const values = DATA.map(d => d.valid_primary).concat([FM_BASELINE_VALID]);
+  let yMin = Math.min(...values), yMax = Math.max(...values);
+  const span = Math.max(yMax - yMin, 0.001);
+  yMin -= span * 0.15; yMax += span * 0.15;
+  const showOracle = ORACLE_CEILING_VALID <= yMax + span * 0.3;
+
+  const x = i => padL + (DATA.length === 1 ? plotW / 2 : (i / (DATA.length - 1)) * plotW);
+  const y = v => padT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  let svgParts = [];
+  // gridlines (4 horizontal)
+  const ticks = 4;
+  for (let t = 0; t <= ticks; t++) {
+    const v = yMin + (t / ticks) * (yMax - yMin);
+    const yy = y(v);
+    svgParts.push(`<line class="gridline" x1="${padL}" x2="${W - padR}" y1="${yy}" y2="${yy}"/>`);
+    svgParts.push(`<text class="axis-label" x="${padL - 8}" y="${yy + 4}" text-anchor="end">${v.toFixed(3)}</text>`);
+  }
+  // FM baseline reference line
+  const ybase = y(FM_BASELINE_VALID);
+  if (ybase > padT && ybase < padT + plotH) {
+    svgParts.push(`<line class="refline" x1="${padL}" x2="${W - padR}" y1="${ybase}" y2="${ybase}"/>`);
+    svgParts.push(`<text class="refline-label" x="${W - padR}" y="${ybase - 4}" text-anchor="end">FM baseline ${FM_BASELINE_VALID.toFixed(4)}</text>`);
+  }
+  if (showOracle) {
+    const yor = y(ORACLE_CEILING_VALID);
+    if (yor > padT && yor < padT + plotH) {
+      svgParts.push(`<line class="refline" x1="${padL}" x2="${W - padR}" y1="${yor}" y2="${yor}"/>`);
+      svgParts.push(`<text class="refline-label" x="${W - padR}" y="${yor - 4}" text-anchor="end">oracle ceiling ${ORACLE_CEILING_VALID.toFixed(4)}</text>`);
+    }
+  }
+  // x axis ticks (sparse)
+  const xTickEvery = Math.max(1, Math.ceil(DATA.length / 10));
+  DATA.forEach((d, i) => {
+    if (i % xTickEvery === 0 || i === DATA.length - 1) {
+      svgParts.push(`<text class="axis-label" x="${x(i)}" y="${H - 8}" text-anchor="middle">${i + 1}</text>`);
+    }
+  });
+  svgParts.push(`<text class="axis-label" x="${padL + plotW / 2}" y="${H - 0}" text-anchor="middle" style="font-size:10px">experiment #</text>`);
+
+  // line
+  const pathD = DATA.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(d.valid_primary)}`).join(' ');
+  svgParts.push(`<path class="line" d="${pathD}"/>`);
+
+  // dots
+  DATA.forEach((d, i) => {
+    svgParts.push(`<circle class="dot" data-i="${i}" cx="${x(i)}" cy="${y(d.valid_primary)}" r="5" fill="${statusColor(d.status)}"/>`);
+  });
+
+  svg.innerHTML = svgParts.join('');
+
+  const tooltip = document.getElementById('tooltip');
+  svg.querySelectorAll('.dot').forEach(dot => {
+    dot.addEventListener('mouseenter', (e) => {
+      const d = DATA[+dot.dataset.i];
+      tooltip.innerHTML = `<strong>#${+dot.dataset.i + 1} · ${d.commit}</strong><br>` +
+        `valid ${d.valid_primary.toFixed(4)} · test ${d.test_primary.toFixed(4)}<br>` +
+        `<span class="status-pill status-${d.status}">${d.status}</span> · ${d.wall_seconds.toFixed(1)}s<br>` +
+        `<span style="color:var(--text-secondary)">${d.description}</span>`;
+      tooltip.style.opacity = 1;
+    });
+    dot.addEventListener('mousemove', (e) => {
+      tooltip.style.left = (e.pageX + 14) + 'px';
+      tooltip.style.top = (e.pageY + 14) + 'px';
+    });
+    dot.addEventListener('mouseleave', () => { tooltip.style.opacity = 0; });
+  });
+}
+
+function renderTable() {
+  const tbody = document.querySelector('#results-table tbody');
+  tbody.innerHTML = DATA.map((d, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${d.commit}</td>
+      <td class="num">${d.valid_primary.toFixed(4)}</td>
+      <td class="num">${d.test_primary.toFixed(4)}</td>
+      <td class="num">${d.wall_seconds.toFixed(1)}</td>
+      <td><span class="status-pill status-${d.status}">${d.status}</span></td>
+      <td>${d.description}</td>
+    </tr>`).reverse().join('');
+}
+
+function renderConcepts() {
+  const el = document.getElementById('concepts-list');
+  if (CONCEPTS.length === 0) {
+    el.innerHTML = '<div class="hyp-empty">no concepts formed yet</div>';
+    return;
+  }
+  el.innerHTML = CONCEPTS.slice().reverse().map(c => {
+    const kept = c.attempts.filter(a => a.outcome === 'improved').length;
+    const best = c.attempts.length ? Math.max(...c.attempts.map(a => a.valid_primary)) : null;
+    const modes = [...new Set(c.attempts.map(a => a.outcome))];
+    return `
+    <div class="hyp-row">
+      <div class="hyp-head">
+        <span class="hyp-id">${c.id}</span>
+        <span class="status-pill status-${c.status}">${c.status}</span>
+        <span class="hyp-statement">${c.statement}</span>
+      </div>
+      <div class="hyp-meta">
+        ${c.attempts.length} attempt${c.attempts.length === 1 ? '' : 's'}
+        ${kept ? `· ${kept} improved` : ''}
+        ${best !== null ? `· best valid ${best.toFixed(4)}` : ''}
+        · opened at experiment #${c.opened_at_iteration + 1}
+        ${c.closed_reason ? `· ${c.closed_reason}` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+renderStats();
+renderChart();
+renderTable();
+renderConcepts();
+</script>
+"""
+
+
+def write_dashboard(repo_root: str, results_path: str, dashboard_path: str, concepts_path: str) -> None:
+    rows = tools.read_results_tsv(results_path)
+    concepts = tools.load_concepts(concepts_path)
+    n = len(rows)
+    subtitle = f"{n} experiment{'s' if n != 1 else ''} logged — regenerate with `python -m autoresearch_lg.cli dashboard`"
+    html = (
+        _TEMPLATE
+        .replace("__DATA_JSON__", json.dumps(rows))
+        .replace("__CONCEPTS_JSON__", json.dumps(concepts))
+        .replace("__FM_BASELINE__", str(FM_BASELINE_VALID))
+        .replace("__ORACLE_CEILING__", str(ORACLE_CEILING_VALID))
+        .replace("__SUBTITLE__", subtitle)
+    )
+    Path(dashboard_path).write_text(html, encoding="utf-8")

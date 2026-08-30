@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tippytop"
+version = "0.1.0"
+description = "TikTok TechJam 2026 Track 2 — autonomous ML research agent for within-user ranking on KuaiRand-Pure"
+requires-python = ">=3.11"
+dependencies = [
+    # the agent (autoresearch_lg)
+    "langgraph>=0.2",
+    "langgraph-sdk",
+    "anthropic>=0.40",
+    "openai>=1.0",
+    "python-dotenv>=1.0",
+    "colorama; sys_platform == 'win32'",
+    # the model library (tippytop) and the frozen kit
+    "numpy",
+]
+
+[project.optional-dependencies]
+# Opt-in. The organisers permit any OSS library; these unlock LambdaRank
+# (LightGBM query groups map onto users) and GBDT baselines. Kept optional so
+# the numpy-only path still works with no extra install.
+models = ["lightgbm", "scikit-learn"]
+dev = ["pytest", "pyyaml"]
+
+[project.scripts]
+tippytop = "tippytop.cli:main"
+
+# Two packages, two roots: the agent at the repo root, the model library
+# under src/. See ARCHITECTURE.md.
+[tool.setuptools.packages.find]
+where = [".", "src"]
+include = ["autoresearch_lg*", "tippytop*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
