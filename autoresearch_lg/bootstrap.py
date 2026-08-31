@@ -139,6 +139,22 @@ def load_baseline_scores(root: str) -> tuple[float, float]:
     return fm["valid"]["primary"], fm["test"]["primary"]
 
 
+def load_baseline_metrics(root: str) -> dict:
+    """The official baseline's full per-metric scores, for the results table.
+
+    Deliverable 4 wants GAUC and nDCG@5 with the absolute delta over the
+    official baseline, so the baseline side of that subtraction has to come from
+    the kit's published file rather than from a local re-run (which lands
+    ~0.0008 away purely from seed noise, and would make the reported delta wrong
+    by a third of a typical improvement)."""
+    try:
+        scores = json.loads(Path(root, "baseline_scores.json").read_text(encoding="utf-8"))
+        fm = scores["scores"]["fm_official"]
+        return {"valid": fm["valid"], "test": fm["test"]}
+    except (OSError, KeyError, json.JSONDecodeError):
+        return {}
+
+
 def start_time_path(root: str) -> Path:
     return Path(root, ".autoresearch_start_time")
 
@@ -148,11 +164,14 @@ def reconstruct_counters(history: list[dict], concepts: list[dict], active_id: s
     a `run` (or a fresh Studio invocation) after a break doesn't quietly
     reset the escalation caps and allow more tune/retry loops than
     intended."""
+    # Must match critic.update_counters exactly, or resuming a run silently
+    # changes when it converges: errors are skipped, not counted.
     no_improve = 0
     for h in reversed(history):
         if h["outcome"] == "improved":
             break
-        no_improve += 1
+        if h["outcome"] != "error":
+            no_improve += 1
 
     retry_count = tune_count = 0
     active = next((c for c in concepts if c["id"] == active_id), None)
@@ -265,6 +284,14 @@ def default_state(overrides: dict | None = None) -> dict:
         "no_improve_count": no_improve_count,
         "start_time": start_time,
         "converged": False,
+        # Failure-policy scratch. Present with defaults so a Studio run (which
+        # bootstraps from an empty input) cannot KeyError its way out of the
+        # loop the first time something goes wrong.
+        "retry_now": False,
+        "repair_error": "",
+        "repair_exp_dir": "",
+        "llm_unavailable": "",
+        "stop_reason": "",
         "mode": "pivot" if not active_id else "tune",  # first call with no active concept must open one
         "eda_summary": {},
     }

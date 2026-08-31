@@ -14,6 +14,9 @@ runs/
 run.log
 results.tsv
 concepts.json
+interventions.jsonl
+resource_report.json
+recovery.jsonl
 checkpoints.db
 .autoresearch_start_time
 autoresearch_lg_graph.mmd

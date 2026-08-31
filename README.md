@@ -21,7 +21,7 @@ New here? Read [`ARCHITECTURE.md`](ARCHITECTURE.md), then
 uv sync                          # or: uv pip install -e ".[dev]"
 cp .env.example .env             # then add ANTHROPIC_API_KEY
 bash scripts/download_data.sh    # or: powershell scripts/download_data.ps1
-uv run pytest tests/ -q          # 34 tests
+uv run pytest tests/ -q          # 200 tests
 ```
 
 Run a model by hand:
@@ -172,18 +172,119 @@ requires costs more than it gains — recovering that is open work. Full numbers
 
 ## Before submitting
 
-- [ ] **Remove `src/tippytop/agent/`** — an earlier agent kept only for offline
-      `--llm mock` testing during development. The deliverable is *one*
-      autonomous agent; shipping two makes a judge guess which produced the
-      result. Exact steps in [`ARCHITECTURE.md`](ARCHITECTURE.md) → *Decisions*.
-- [ ] Final submission CSV passes `python submit.py --check --split test <csv>`
-- [ ] `results/leaderboard.md` reports validation-best GAUC / nDCG@5 and the
-      absolute delta over the official baseline
-- [ ] Run logs cover, per iteration: hypothesis, code diff, metrics, and any
-      error/recovery event
-- [ ] Report total LLM tokens, agent wall-clock, and iterations used
+Done:
+
+- [x] **One agent.** `src/tippytop/agent/` (the earlier Gemini lane) is removed;
+      `autoresearch_lg/` is the deliverable. `interventions.py` and `redact.py`
+      were moved to `src/tippytop/runlog/` first and wired into the surviving
+      agent — see [`ARCHITECTURE.md`](ARCHITECTURE.md) → *Decisions*.
+- [x] **The intervention count is measured, not asserted.** Resumes are detected
+      automatically; anything else is recorded with
+      `python -m autoresearch_lg.cli note "<reason>"`. `finalize` writes the
+      count and every reason into `resource_report.json`.
+- [x] **The run survives things it does not control.** Transient provider
+      errors retry with backoff; a dead provider routes to `finalize` instead of
+      raising; a crashing experiment is repaired with its own traceback rather
+      than rerolled at a new seed; and `run` finalizes in a `finally`, so the
+      graded artifacts get written on every exit path. `ARCHITECTURE.md` →
+      *Failure policy*. If a run ever does end without them:
+      `python -m autoresearch_lg.cli finalize`.
+- [x] **No test metric can reach the proposing model.** The crashed-run stdout
+      tail — the only path that carried one — is scrubbed before it becomes
+      `failure_error`. Covered by `tests/test_run_integrity.py`.
+
+Still to do, and each needs a completed agent run:
+
+- [ ] Run the agent to convergence on the real data:
+      `python -m autoresearch_lg.cli setup --tag final` then `run --tag final`
+- [ ] `python scripts/package_final_run.py` — gates the artifacts, then copies
+      `runs.jsonl` / `resource_report.json` / `submission.csv` / `results.tsv` /
+      `concepts.json` / `interventions.jsonl` into `results/final_run/`.
+      It refuses on a missing artifact, a rejected CSV, a run short enough to be
+      a smoke test, or an intervention count that disagrees with its own log.
+- [ ] `git add results/final_run && git commit` — a grader cannot see files that
+      are not in the repository
+- [ ] Devpost description — draft in
+      [`docs/devpost.md`](docs/devpost.md); fill the bracketed run numbers from
+      `resource_report.json`
+
+## Reproducing our result
+
+```bash
+python -m pip install -e .            # or: uv sync
+python scripts/download_data.py       # KuaiRand-Pure, ~46 MB, from Zenodo
+python -m pytest tests/ -q            # 200 tests
+
+# 1. sanity — if this is not ~0.4754, nothing else is trustworthy
+python -m tippytop run --model random --no-log
+
+# 2. reproduce the official baseline (test primary 0.5946 +- 0.0008)
+python -m tippytop run --model fm --no-log
+
+# 3. our best single model, and the ensemble
+python -m tippytop run --model ffm --no-log
+python -m tippytop run --model fm_blend --no-log
+
+# 4. the agent, end to end (needs ANTHROPIC_API_KEY in .env)
+python -m autoresearch_lg.cli setup --tag final
+python -m autoresearch_lg.cli run   --tag final
+
+# 5. collect the graded artifacts (refuses if anything is not gradeable)
+python scripts/package_final_run.py
+```
+
+Committed artifacts from our submission run are in
+[`results/final_run/`](results/final_run/): `runs.jsonl` (per-iteration
+hypothesis, **code diff**, metrics, errors and recovery), `resource_report.json`
+(tokens, wall-clock, iterations, intervention count, results table),
+`submission.csv`, `results.tsv`, `concepts.json`, `interventions.jsonl`,
+`recovery.jsonl`. Every measured comparison is in
+[`results/leaderboard.md`](results/leaderboard.md).
+
+## Limitations, and what we would do with more time
+
+**We are noise-limited, not idea-limited.** Seed-to-seed variation is now
+0.0002–0.0003, but evaluation noise — resampling the ~24k evaluation users — is
+≈0.0008. More seeds cannot tighten that. Any future gain below ~0.002 is not
+distinguishable from noise at this sample size, which is why we report
+paired-bootstrap intervals rather than differences of scalars. With more time we
+would rank-average across seeds *before* bootstrapping, which is the only lever
+that actually narrows the interval.
+
+**Validation→test transfer is unmeasured.** We treat a validation gain as
+predictive of a test gain but have never estimated the slope, and the evidence we
+have is not 1:1 (FFM: +0.0009 valid, +0.0019 test). `src/tippytop/stats/
+transfer.py` can estimate it; we do not yet have enough distinct models to do so
+reliably.
+
+**`time_ms` is untouched.** Within-session position varies *within* a user, so
+unlike every user-side aggregate it can reorder — the most obvious remaining
+direction, and one the agent has not been given.
+
+**The ensemble choice is weaker than the ensemble.** 6FM+6FFM beats 6FFM alone by
++0.0005 on test, inside the noise band, and that comparison used test. "FFM plus
+ensembling beats FM" is replicated on validation across disjoint seed halves; the
+choice between the two ensembles is not.
+
+**The agent's search is breadth-first over concepts, not depth-first over one.**
+`tune_cap=3` bounds refinement before it pivots. On a benchmark where the
+remaining headroom is small and the noise floor is high, more depth per concept
+would probably beat more concepts — but that is a hypothesis, not a measurement.
+
+**We did not attempt the bonus benchmarks** (KuaiRand-1k, KuaiRand-27k). The
+pipeline is dataset-agnostic below `data.py`, but we chose to spend the budget on
+evidence quality for the required benchmark rather than coverage.
 
 ## Team
 
-Work on your own branch `dev/<name>`, then PR into the integration branch. Put
-your best valid/test primary in the PR description.
+<!-- Required deliverable: fill this in before submitting. -->
+
+| Member | Contribution |
+|---|---|
+| *(name)* | *(e.g. LangGraph agent loop, router and convergence rule)* |
+| *(name)* | *(e.g. FFM and ensemble models, leaderboard experiments)* |
+| *(name)* | *(e.g. statistical layer: paired bootstrap, power analysis)* |
+| *(name)* | *(e.g. failure policy, integrity guards, test suite)* |
+
+Working agreement: own branch `dev/<name>`, then PR into the integration branch.
+Put your best valid/test primary in the PR description.

@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
+from tippytop.runlog import scrub
+
 from . import tools
 from .state import ResearchState
 
@@ -35,8 +37,19 @@ from .state import ResearchState
 def apply_diff(state: ResearchState) -> dict:
     try:
         name = f"exp_{state['iteration'] + 1:04d}"
+        # Whatever propose read as "current" is what the diff must be against,
+        # or the recorded diff describes a change nobody made.
+        source_for_diff = (state.get("repair_exp_dir") if state.get("mode") == "repair"
+                           and state.get("repair_exp_dir")
+                           else (state.get("best_exp_dir") or state["repo_root"]))
         exp_dir = tools.make_experiment_dir(state["repo_root"], name)
-        tools.write_experiment_files(exp_dir, state["edited_files"])
+        # `allowed` is the whitelist, not a suggestion: the LLM chooses these
+        # path strings, and an unguarded write of "../../baseline.py" lands on
+        # the frozen root kit while "evaluate.py" replaces the scoring spec that
+        # make_experiment_dir just copied in. Both are caught before any byte is
+        # written -- see tools.safe_experiment_path.
+        tools.write_experiment_files(exp_dir, state["edited_files"],
+                                     allowed=state["editable_files"])
         # A concept edit might only touch one of the two editable files —
         # the folder still needs a complete pair to run. Fill the other
         # from whichever source is currently "current" for propose (the
@@ -47,7 +60,22 @@ def apply_diff(state: ResearchState) -> dict:
         if missing:
             source_dir = state.get("best_exp_dir") or state["repo_root"]
             tools.write_experiment_files(exp_dir, tools.read_experiment_files(source_dir, missing))
-        return {"exp_dir": exp_dir, "step_failed": False}
+        # Deliverable 3 asks for "the code diff applied" per iteration. Only
+        # the filenames were being logged, and the folders that hold the full
+        # content are gitignored -- so a grader reading runs.jsonl saw
+        # ["baseline.py"] and no way to tell what the agent actually did.
+        # Computed here, where both sides are in hand, rather than reconstructed
+        # later from folders that may have been cleaned.
+        return {"exp_dir": exp_dir, "step_failed": False,
+                "diff": tools.unified_diff(source_for_diff, exp_dir,
+                                           state["editable_files"])}
+    except tools.UnsafeExperimentPath as e:
+        # Not an OSError, and it must not be allowed to escape as one: an
+        # unsafe path is a defective *proposal*, so it belongs on the failure
+        # branch where the router turns it into a repair with the reason
+        # attached, not in a traceback that ends the run.
+        return {"step_failed": True, "failure_step": "apply_diff",
+                "failure_error": f"refused to write a proposed file: {e}"}
     except OSError as e:
         return {"step_failed": True, "failure_step": "apply_diff", "failure_error": str(e)}
 
@@ -60,8 +88,14 @@ def run_and_evaluate(state: ResearchState) -> dict:
     base = {"run_stdout": result["stdout"], "wall_seconds": result["wall_seconds"], "seed_used": seed}
     if result["crashed"]:
         reason = "timed out (>10min)" if result["timed_out"] else "non-zero exit"
+        # The stdout tail is the one path by which a *test* metric can reach the
+        # proposal prompt: context.py feeds `error` back to the LLM, and a run
+        # that crashes after baseline.py has already printed its summary block
+        # carries "test primary 0.59.." in exactly those last 2000 characters.
+        # Everything else the model sees is validation-only by construction;
+        # this is the leak the wall would otherwise have.
         return {**base, "step_failed": True, "failure_step": "run_and_evaluate",
-                "failure_error": f"{reason}:\n{result['stdout'][-2000:]}"}
+                "failure_error": scrub(f"{reason}:\n{result['stdout'][-2000:]}", limit=2000)}
     return {**base, "step_failed": False}
 
 
@@ -70,10 +104,24 @@ def collect_metrics(state: ResearchState) -> dict:
         return {}
     parsed = tools.parse_summary(state["run_stdout"])
     if parsed is None:
+        # Two different defects, and the model can only fix them if it is told
+        # which one it hit: a missing summary block means the output format
+        # changed, while a present-but-impossible number means the code is
+        # reporting something that is not a score. The second is the dangerous
+        # one -- an unbounded metric would make that folder the incumbent
+        # forever and get shipped by finalize.
+        found = tools.SUMMARY_RE.search(state["run_stdout"]) is not None
+        why = ("the summary block reports a primary outside [0, 1] — "
+               "mean(GAUC, nDCG@5) cannot leave that range, so the number is "
+               "not a valid score"
+               if found else
+               "exit 0 but no summary block in stdout — output format changed?")
         return {"step_failed": True, "failure_step": "collect_metrics",
-                "failure_error": "exit 0 but no summary block in stdout — output format changed?"}
+                "failure_error": why}
     valid_p, test_p = parsed
-    return {"valid_primary": valid_p, "test_primary": test_p, "step_failed": False}
+    full = tools.parse_summary_full(state["run_stdout"]) or {}
+    return {"valid_primary": valid_p, "test_primary": test_p, "step_failed": False,
+            "valid_metrics": full.get("valid", {}), "test_metrics": full.get("test", {})}
 
 
 def emit_failure(state: ResearchState) -> dict:

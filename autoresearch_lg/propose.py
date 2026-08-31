@@ -30,7 +30,7 @@ from langgraph.graph import END, StateGraph
 
 from . import bootstrap
 from . import context as context_mod
-from . import tools
+from . import resilience, tools
 from .state import ResearchState
 
 DEFAULT_MODEL = bootstrap.DEFAULT_MODEL  # single source of truth — bootstrap.py
@@ -128,7 +128,11 @@ OPENAI_TOOL = {
 
 
 def _call_anthropic(model: str, system_prompt: str, user_content: str) -> tuple[dict, int, int]:
-    client = anthropic.Anthropic()
+    # The SDK default is max_retries=2 with its own backoff. That is tuned for
+    # an interactive call; this one runs unattended for hours, where the cost of
+    # giving up is the entire run. See resilience.CLIENT_MAX_RETRIES.
+    client = anthropic.Anthropic(max_retries=resilience.CLIENT_MAX_RETRIES,
+                                 timeout=resilience.CLIENT_TIMEOUT_SECONDS)
     response = client.messages.create(
         model=model,
         max_tokens=16000,
@@ -142,12 +146,23 @@ def _call_anthropic(model: str, system_prompt: str, user_content: str) -> tuple[
         messages=[{"role": "user", "content": user_content}],
         **_anthropic_request_kwargs(model),
     )
-    tool_use = next(b for b in response.content if b.type == "tool_use")
-    return tool_use.input, response.usage.input_tokens, response.usage.output_tokens
+    # A bare next() raises StopIteration here, which generator machinery
+    # upstream can swallow or reinterpret — the run then dies with a traceback
+    # that points nowhere near the real cause. This happens for real: the model
+    # can answer with text only when it hits max_tokens mid-tool-use, or when it
+    # declines. Raise something the retry policy can recognise instead.
+    tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use is None:
+        kinds = [getattr(b, "type", "?") for b in response.content]
+        raise resilience.ProposalError(
+            f"no tool_use block in the response (stop_reason="
+            f"{getattr(response, 'stop_reason', '?')}, blocks={kinds})")
+    return _validate_payload(tool_use.input), response.usage.input_tokens, response.usage.output_tokens
 
 
 def _call_openai(model: str, system_prompt: str, user_content: str) -> tuple[dict, int, int]:
-    client = openai.OpenAI()
+    client = openai.OpenAI(max_retries=resilience.CLIENT_MAX_RETRIES,
+                           timeout=resilience.CLIENT_TIMEOUT_SECONDS)
     response = client.chat.completions.create(
         model=model,
         max_completion_tokens=16000,
@@ -158,9 +173,48 @@ def _call_openai(model: str, system_prompt: str, user_content: str) -> tuple[dic
         tools=[OPENAI_TOOL],
         tool_choice={"type": "function", "function": {"name": _TOOL_NAME}},
     )
-    tool_call = response.choices[0].message.tool_calls[0]
-    payload = json.loads(tool_call.function.arguments)
-    return payload, response.usage.prompt_tokens, response.usage.completion_tokens
+    calls = (response.choices[0].message.tool_calls or []) if response.choices else []
+    if not calls:
+        raise resilience.ProposalError(
+            f"no tool call in the response (finish_reason="
+            f"{response.choices[0].finish_reason if response.choices else '?'})")
+    try:
+        payload = json.loads(calls[0].function.arguments)
+    except json.JSONDecodeError as e:
+        raise resilience.ProposalError(f"tool arguments were not valid JSON: {e}") from e
+    return (_validate_payload(payload),
+            response.usage.prompt_tokens, response.usage.completion_tokens)
+
+
+_REQUIRED_KEYS = ("concept", "hypothesis", "description", "files")
+
+
+def _validate_payload(payload: dict) -> dict:
+    """Fail here, with a readable reason, rather than at a KeyError three
+    functions away. `strict` schemas make this rare; rare is not never, and a
+    six-hour unattended run is exactly where the rare case shows up."""
+    if not isinstance(payload, dict):
+        raise resilience.ProposalError(f"tool payload is {type(payload).__name__}, not an object")
+    missing = [k for k in _REQUIRED_KEYS if not payload.get(k)]
+    if missing:
+        raise resilience.ProposalError(f"tool payload is missing {missing}")
+    files = payload["files"]
+    if not isinstance(files, list) or not files:
+        raise resilience.ProposalError("tool payload has no files")
+    seen = set()
+    for f in files:
+        if not isinstance(f, dict) or "path" not in f or "content" not in f:
+            raise resilience.ProposalError(f"malformed file entry: {str(f)[:200]}")
+        # `{f["path"]: f["content"] for f in files}` silently keeps the LAST
+        # entry for a repeated path. That is deterministic but it is not
+        # obviously the model's intent, and a proposal that describes a file
+        # twice is a proposal we do not understand. Regenerating costs one call;
+        # guessing costs a wasted training run on code nobody chose.
+        if f["path"] in seen:
+            raise resilience.ProposalError(
+                f"file {f['path']!r} appears more than once; one entry per file")
+        seen.add(f["path"])
+    return payload
 
 
 def read_mode(state: ResearchState) -> dict:
@@ -186,6 +240,22 @@ def _mode_instructions(state: ResearchState) -> str:
             "MODE: first proposal. No concept has been tried yet beyond the "
             "baseline. Propose the strongest first concept given the EDA and "
             "the available directions below."
+        )
+    if mode == "repair":
+        # MLE-STAR's debugging module: hand back the traceback and ask for a
+        # fix, keeping the concept fixed. A blind reroll at another seed cannot
+        # fix a NameError, and spends a full training run finding that out.
+        return (
+            f"MODE: repair (debug). Your last experiment for the ACTIVE concept "
+            f"'{active['statement'] if active else '?'}' FAILED TO RUN. Below is "
+            "the code exactly as it was executed, and the error it produced.\n\n"
+            "Fix the defect. Do NOT change the concept, do NOT propose a "
+            "different idea, and do NOT simplify the idea away to make the error "
+            "go away — a repair that removes the hypothesis is worth nothing. "
+            "`concept` must match the active concept verbatim.\n\n"
+            "The harness runs ONLY `baseline.py --model fm`, so verify your fix "
+            "is reachable from `run_fm`.\n\n"
+            f"ERROR:\n{state.get('repair_error', '(no detail captured)')[:3000]}"
         )
     if mode == "tune":
         return (
@@ -216,11 +286,35 @@ def llm_generate(state: ResearchState) -> dict:
     # pristine root files (nothing has beaten the baseline yet). Never the
     # root files once any concept has actually been kept — root baseline.py/
     # data.py are read-only from this harness's point of view after setup.
-    source_dir = state.get("best_exp_dir") or state["repo_root"]
-    current_files = tools.read_experiment_files(source_dir, state["editable_files"])
+    # In repair mode the model must see the code that actually crashed, not the
+    # last good code — otherwise it is debugging a file it never wrote.
+    if state["mode"] == "repair" and state.get("repair_exp_dir"):
+        source_dir = state["repair_exp_dir"]
+    else:
+        source_dir = state.get("best_exp_dir") or state["repo_root"]
+    fallback_note = ""
+    try:
+        current_files = tools.read_experiment_files(source_dir, state["editable_files"])
+    except OSError as e:
+        # The incumbent's folder is gone (deleted, a full disk, a cleaned runs/).
+        # This is a LOCAL, permanent failure, and without this it surfaces as a
+        # bare OSError inside a node whose retry policy would back off five times
+        # and then declare the provider dead -- the wrong diagnosis and the wrong
+        # response. Fall back to the pristine root files, which always exist, and
+        # say so rather than silently regressing to the baseline.
+        resilience.log_recovery(state["repo_root"], resilience.recovery_event(
+            iteration=state.get("iteration", 0), layer="experiment",
+            kind="missing-source-dir", action="fallback-to-root",
+            detail=f"{source_dir}: {e}"))
+        source_dir = state["repo_root"]
+        current_files = tools.read_experiment_files(source_dir, state["editable_files"])
+        fallback_note = (
+            "\nNOTE: the incumbent experiment folder could not be read, so the "
+            "files below are the pristine baseline, NOT the current best. Treat "
+            "this as a fresh start from the baseline.")
     parts = [
         _mode_instructions(state),
-        "\nCurrent file contents:\n" + "\n\n".join(
+        fallback_note + "\nCurrent file contents:\n" + "\n\n".join(
             f"### {p}\n```python\n{c}\n```" for p, c in current_files.items()
         ),
         "\nEDA on the current train/valid splits:\n" + _eda_block(state["eda_summary"]),
@@ -297,6 +391,13 @@ def _eda_block(eda: dict) -> str:
     return json.dumps(eda, indent=2)
 
 
+# AIDE's published debug budget (aide/utils/config.yaml: search.max_debug_depth
+# = 3). Anchored to a value that has been run at scale rather than guessed; two
+# was too few to be worth the round trip, and more than three on a *syntax*
+# defect means the model is not going to get it.
+MAX_REGENERATE_ATTEMPTS = 3
+
+
 def validate_diff(state: ResearchState) -> dict:
     errors = []
     for path, content in state["edited_files"].items():
@@ -308,9 +409,10 @@ def validate_diff(state: ResearchState) -> dict:
 
 
 def _route_validate(state: ResearchState) -> str:
-    if state["diff_valid"] or state["propose_attempt"] >= 2:
-        # valid, or already retried once — let it through either way; a
-        # still-broken diff becomes a legitimate 'error' outcome downstream.
+    if state["diff_valid"] or state["propose_attempt"] >= MAX_REGENERATE_ATTEMPTS:
+        # valid, or out of regeneration attempts — let it through either way; a
+        # still-broken diff becomes a legitimate 'error' outcome downstream,
+        # which the router then routes into a repair rather than a reroll.
         return "ok"
     return "regenerate"
 

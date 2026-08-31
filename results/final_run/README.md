@@ -18,27 +18,41 @@ Empty until the submission run is chosen. Do not fill it with smoke-test output.
 
 ## How to fill it
 
-After the run you intend to submit, from the repo root:
+One command, from the repo root, after the run you intend to submit:
 
 ```bash
-cp runs.jsonl resource_report.json submission.csv results.tsv concepts.json results/final_run/
-uv run python submit.py --check --split test results/final_run/submission.csv
+python scripts/package_final_run.py            # --dry-run to check without copying
 git add results/final_run && git commit -m "Add final run artifacts"
 ```
 
-Run the checker **before** committing. It rejects a wrong header, a row-count
-mismatch, `row_id` gaps, misalignment against the evaluation split, and
-non-numeric or NaN/Inf scores — a malformed file scores zero regardless of model
-quality.
+The script gates before it copies. It **refuses** when:
+
+- any of the five required artifacts is missing (with the command that produces
+  them — they only appear when `finalize` fires on convergence);
+- `submit.py --check --split test` rejects the submission. This is the single
+  largest avoidable risk in the whole entry: a malformed or misaligned CSV scores
+  zero regardless of model quality, and `(user_id, video_id)` is *not* a key on
+  test — 3.06% of its rows are repeated pairs, so alignment is verified row by
+  row against `row_id`;
+- the run is short enough to be a smoke test (under 5 iterations);
+- `resource_report.json` has no `manual_interventions` field, or reports a count
+  that disagrees with `interventions.jsonl`. A wrong number is worse than none.
+
+It also prints the iteration count, the outcome mix, wall clock, token totals and
+the intervention summary — the numbers Deliverable 4 asks for and the ones the
+Devpost draft in `docs/devpost.md` has bracketed placeholders for.
 
 ## Also required, and not produced automatically
 
-- **Manual intervention count.** Deliverable 3 asks for it explicitly, and
-  Impact & Relevance (20%) is scored primarily on this number. Record it here,
-  with what each intervention was and why. An honest count beats an unsupported
-  claim of full autonomy.
+- **The prose around the intervention count.** The number, the summary and every
+  reason are written into `resource_report.json` automatically — resumes are
+  detected whether or not the operator declares them, and
+  `python -m autoresearch_lg.cli note "<reason>"` records the rest. What still
+  needs a human is the explanation in the Devpost description of what each
+  intervention was and why.
 - **A results table** giving validation-best GAUC / nDCG@5 and the absolute delta
-  over the official baseline. Numbers are in `../leaderboard.md`.
+  over the official baseline. Numbers are in `../leaderboard.md`; the table is
+  already drafted in `../../docs/devpost.md`.
 - **GPU-hours**, if any were used. None so far — this is a CPU-only pipeline.
 
 ## Reporting note

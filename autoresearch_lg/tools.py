@@ -6,7 +6,9 @@ client or LangGraph.
 """
 from __future__ import annotations
 
+import difflib
 import json
+import math
 import os
 import re
 import shutil
@@ -14,7 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # The interpreter running this harness. NOT a bare "python3" string: on Windows
 # that resolves to the Microsoft Store alias stub ("Python was not found"), and
@@ -79,11 +81,28 @@ out["train_cardinality"] = {
 }
 print(json.dumps(out))
 """
+# The negative lookahead matters: `[\d.]+` alone matches the "1" of "1e9" and
+# silently reports a primary of 1.0. Anything that is not a plain decimal is not
+# a score this harness will accept.
+# Named groups because the deliverable is per-metric: the judging formula is
+# mean(delta(GAUC), delta(nDCG@5)), and the results table must report both, not
+# just the primary they average to.
 SUMMARY_RE = re.compile(
-    r"valid\s+GAUC\s+[\d.]+\s*\|\s*nDCG@5\s+[\d.]+\s*\|\s*primary\s+([\d.]+).*?"
-    r"test\s+GAUC\s+[\d.]+\s*\|\s*nDCG@5\s+[\d.]+\s*\|\s*primary\s+([\d.]+)",
+    r"valid\s+GAUC\s+(?P<valid_GAUC>[\d.]+)(?![\w.])\s*\|\s*"
+    r"nDCG@5\s+(?P<valid_nDCG>[\d.]+)(?![\w.])\s*\|\s*"
+    r"primary\s+(?P<valid_primary>[\d.]+)(?![\w.]).*?"
+    r"test\s+GAUC\s+(?P<test_GAUC>[\d.]+)(?![\w.])\s*\|\s*"
+    r"nDCG@5\s+(?P<test_nDCG>[\d.]+)(?![\w.])\s*\|\s*"
+    r"primary\s+(?P<test_primary>[\d.]+)(?![\w.])",
     re.DOTALL,
 )
+
+# mean(GAUC, nDCG@5) is a mean of two quantities that each live in [0, 1], so a
+# primary outside that range is not a good result -- it is a broken or dishonest
+# one. Without this bound, code that prints `primary 99.0` becomes the incumbent
+# forever: `best_valid_primary` only ever moves up, propose() then bases every
+# later proposal on that folder, and finalize ships it.
+METRIC_MIN, METRIC_MAX = 0.0, 1.0
 
 
 # ---------------------------------------------------------------- git -----
@@ -188,19 +207,58 @@ def run_eda(repo_root: str, data_dir: str) -> dict:
 
 
 def parse_summary(stdout: str) -> tuple[float, float] | None:
-    """Extract (valid_primary, test_primary) from baseline.py's summary block."""
+    """Extract (valid_primary, test_primary) from baseline.py's summary block.
+
+    Returns None when the block is absent OR when the numbers in it are not
+    possible scores. Both cases are handled identically upstream (a clean
+    `collect_metrics` failure, which routes to repair), and both mean the same
+    thing: this run produced nothing we can believe.
+    """
+    full = parse_summary_full(stdout)
+    if full is None:
+        return None
+    return full["valid"]["primary"], full["test"]["primary"]
+
+
+def parse_summary_full(stdout: str) -> dict | None:
+    """Every metric in the summary block, per split, or None if any is impossible.
+
+    Deliverable 4 asks for validation-best GAUC and nDCG@5 and the absolute
+    delta over the official baseline, so the harness has to record both metrics
+    rather than only the primary. (Worth knowing: because primary is defined as
+    mean(GAUC, nDCG@5), the judging formula mean(delta(GAUC), delta(nDCG@5)) is
+    algebraically identical to delta(primary) -- but the table still has to show
+    the two metrics.)
+    """
     m = SUMMARY_RE.search(stdout)
     if not m:
         return None
-    return float(m.group(1)), float(m.group(2))
+    try:
+        vals = {k: float(v) for k, v in m.groupdict().items()}
+    except (TypeError, ValueError):
+        return None
+    for v in vals.values():
+        if not math.isfinite(v) or not (METRIC_MIN <= v <= METRIC_MAX):
+            return None
+    return {
+        "valid": {"GAUC": vals["valid_GAUC"], "nDCG@5": vals["valid_nDCG"],
+                  "primary": vals["valid_primary"]},
+        "test": {"GAUC": vals["test_GAUC"], "nDCG@5": vals["test_nDCG"],
+                 "primary": vals["test_primary"]},
+    }
 
 
 # ------------------------------------------------------------ results.tsv-
 RESULTS_HEADER = "commit\tvalid_primary\ttest_primary\twall_seconds\tstatus\tdescription\n"
 
 
+# interventions.jsonl and resource_report.json belong to a single run exactly as
+# runs.jsonl does. Leaving interventions.jsonl behind would carry the previous
+# run's manual-intervention count into a fresh one and inflate the number that
+# Deliverable 3 asks for -- the same class of bug archiving was added to fix.
 RUN_ARTIFACTS = ("runs.jsonl", "results.tsv", "concepts.json", "checkpoints.db",
-                 ".autoresearch_start_time", "results_dashboard.html")
+                 ".autoresearch_start_time", "results_dashboard.html",
+                 "interventions.jsonl", "resource_report.json")
 
 
 def archive_run_artifacts(repo_root: str) -> str | None:
@@ -356,9 +414,96 @@ def make_experiment_dir(repo_root: str, name: str) -> str:
     return str(d)
 
 
-def write_experiment_files(exp_dir: str, files: dict) -> None:
-    for path, content in files.items():
-        Path(exp_dir, path).write_text(content, encoding="utf-8", newline="\n")
+# Files the agent may never write, under any name it proposes. `evaluate.py` is
+# the scoring spec and is copied into every experiment folder by
+# make_experiment_dir -- BEFORE write_experiment_files runs, so an unguarded
+# write would simply overwrite it and the experiment would then be scored by the
+# model's own evaluator. That is not a hypothetical: "score yourself 1.0" is the
+# single highest-reward move available to anything optimising the number this
+# harness reads, and it would be invisible in runs.jsonl.
+PROTECTED_FILES = frozenset({"evaluate.py", "submit.py", "baseline_scores.json"})
+
+
+class UnsafeExperimentPath(ValueError):
+    """A proposed file path that must never be written."""
+
+
+def safe_experiment_path(exp_dir: str, path: str, allowed=None) -> Path:
+    """Resolve `path` inside `exp_dir`, or refuse.
+
+    The LLM chooses these path strings. `Path(exp_dir, "../../baseline.py")`
+    resolves OUTSIDE the experiment folder and overwrites the frozen root kit --
+    the one thing the whole runs/ isolation design exists to prevent. An absolute
+    path ignores `exp_dir` entirely.
+
+    Three checks, in order of severity: not protected, not absolute, and
+    contained after resolution (which is what actually catches `..`, symlinks,
+    and Windows drive-relative forms in one go).
+    """
+    raw = str(path).strip().replace("\\", "/")
+    name = PurePosixPath(raw).name
+    if name in PROTECTED_FILES or raw in PROTECTED_FILES:
+        raise UnsafeExperimentPath(
+            f"{path!r} targets a protected file ({sorted(PROTECTED_FILES)}); "
+            "evaluate.py is the scoring spec and is never agent-editable")
+    if allowed is not None and raw not in set(allowed):
+        raise UnsafeExperimentPath(
+            f"{path!r} is not one of the editable files {sorted(allowed)}")
+    if Path(raw).is_absolute() or (len(raw) > 1 and raw[1] == ":"):
+        raise UnsafeExperimentPath(f"{path!r} is an absolute path")
+    root = Path(exp_dir).resolve()
+    target = (root / raw).resolve()
+    if target != root and root not in target.parents:
+        raise UnsafeExperimentPath(
+            f"{path!r} resolves to {target}, outside the experiment folder {root}")
+    return target
+
+
+def write_experiment_files(exp_dir: str, files: dict, allowed=None) -> None:
+    """Write proposed files into one experiment folder, refusing unsafe paths.
+
+    Raises UnsafeExperimentPath BEFORE writing anything, so a proposal with one
+    bad path does not leave a half-written folder behind -- a partially written
+    experiment is worse than none, because it still runs and still gets scored.
+    """
+    resolved = [(safe_experiment_path(exp_dir, p, allowed), c) for p, c in files.items()]
+    for target, content in resolved:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8", newline="\n")
+
+
+# A diff big enough to bury runs.jsonl is not more informative than a truncated
+# one. 400 lines is generous for a two-file change and keeps a 50-iteration log
+# readable and small enough to commit.
+MAX_DIFF_LINES = 400
+
+
+def unified_diff(source_dir: str, exp_dir: str, editable_files: list[str]) -> str:
+    """Unified diff of what this experiment changed, for the run log.
+
+    Never raises: a missing source file (a cleaned runs/ folder) yields an empty
+    side rather than killing an experiment that has otherwise succeeded. The
+    diff is documentation; it must not be able to break the thing it documents.
+    """
+    out: list[str] = []
+    for name in editable_files:
+        def _read(d):
+            try:
+                return Path(d, name).read_text(encoding="utf-8").splitlines(keepends=True)
+            except OSError:
+                return []
+        before, after = _read(source_dir), _read(exp_dir)
+        if before == after:
+            continue
+        out.extend(difflib.unified_diff(before, after,
+                                        fromfile=f"a/{name}", tofile=f"b/{name}", n=3))
+    if not out:
+        return "(no change to the editable files — this experiment ran identical code)"
+    if len(out) > MAX_DIFF_LINES:
+        head = out[:MAX_DIFF_LINES]
+        head.append(f"\n[... {len(out) - MAX_DIFF_LINES} more diff lines elided ...]\n")
+        out = head
+    return "".join(out)
 
 
 def read_experiment_files(exp_dir: str, editable_files: list[str]) -> dict:

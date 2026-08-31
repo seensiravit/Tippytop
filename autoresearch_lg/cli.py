@@ -34,12 +34,16 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from tippytop.runlog import InterventionLog
+
 from . import bootstrap
 from . import dashboard as dashboard_mod
+from . import resilience
 from . import tools
 
 load_dotenv()  # picks up ANTHROPIC_API_KEY / OPENAI_API_KEY from .env in the cwd, if present
@@ -147,6 +151,15 @@ def cmd_run(args: argparse.Namespace) -> None:
         if input("continue anyway? [y/N] ").strip().lower() != "y":
             sys.exit(1)
 
+    # Autonomy is graded on the manual-intervention count, so a restart has to
+    # cost the run something. This is detected, not declared: if runs.jsonl
+    # already holds iterations, the operator has restarted a loop that was
+    # supposed to finish on its own, whether or not they choose to say so.
+    ilog = InterventionLog(Path(root))
+    rec = ilog.detect_resume(Path(root, "runs.jsonl"))
+    if rec is not None:
+        print(f"intervention recorded: {rec.reason} (total {ilog.count})")
+
     from . import graph as graph_mod  # deferred: needs langgraph + anthropic installed
     compiled = graph_mod.build_graph()
 
@@ -158,6 +171,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     recursion_limit = (state["max_iterations"] - state["iteration"] + 5) * 25 + 20
     last_history_len = state["iteration"]
     final_state = state
+    stop_reason = "converged"
     try:
         for chunk in compiled.stream(state, config={"recursion_limit": recursion_limit}, stream_mode="values"):
             final_state = chunk
@@ -174,9 +188,27 @@ def cmd_run(args: argparse.Namespace) -> None:
                 if last.get("error"):
                     print(f"error: {last['error'][:300]}")
     except KeyboardInterrupt:
+        stop_reason = "interrupted (KeyboardInterrupt)"
         print("\ninterrupted — state on disk is consistent up to the last completed "
               "node (results.tsv/runs.jsonl/concepts.json/checkpoints.db). "
               "Re-run `run` to continue.")
+    except Exception as e:                                     # noqa: BLE001
+        # Nothing above should reach here: every expected failure has an edge,
+        # transient provider errors retry, and a terminal one routes to
+        # finalize. This catches the unexpected -- and the point is that even
+        # an unforeseen crash still ships the deliverables below, instead of
+        # throwing away every iteration the run completed.
+        stop_reason = f"crashed ({type(e).__name__}: {e})"
+        resilience.log_recovery(root, resilience.recovery_event(
+            iteration=final_state.get("iteration", 0), layer="terminal",
+            kind=type(e).__name__, action="finalize-early", detail=str(e)))
+        print(f"\nunhandled error: {type(e).__name__}: {e}", file=sys.stderr)
+        traceback.print_exc()
+    finally:
+        # The failsafe. Whatever happened above -- clean convergence, Ctrl+C, a
+        # crash, the provider going away -- the graded artifacts get written
+        # from what is on disk. A no-op if the graph's own finalize already ran.
+        finalize_from_disk(root, args, reason=stop_reason)
 
     print(f"\nbest valid_primary={final_state['best_valid_primary']:.4f} "
           f"(checkpoint {final_state['best_checkpoint_id']}, "
@@ -187,7 +219,73 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"\nconverged. {r['iterations']} iterations, {r['elapsed_seconds']:.0f}s elapsed, "
               f"{r['tokens_in_total']}+{r['tokens_out_total']} tokens in/out, "
               f"{r['concepts_tried']} concepts tried ({r['concepts_confirmed']} confirmed).")
+        print(f"manual interventions: {r.get('intervention_summary', 'n/a')}")
         print(f"submission: {r['submission'] or 'FAILED — ' + r['submission_note']}")
+
+
+# --------------------------------------------------------- finalize ------
+def _already_finalized(root: str) -> bool:
+    return Path(root, "resource_report.json").exists()
+
+
+def finalize_from_disk(root: str, args: argparse.Namespace, *, reason: str) -> None:
+    """Produce the graded deliverables from whatever is on disk, right now.
+
+    This is the L4 failsafe, and it is the one that matters most. `finalize`
+    used to be reachable only by falling off the end of the loop, so any exit
+    that was not a clean convergence -- Ctrl+C, an unhandled exception, a
+    machine going to sleep -- left `submission.csv` and `resource_report.json`
+    unwritten. A run with 30 good iterations in `runs.jsonl` then scored zero on
+    Deliverables 3 and 4, because a grader cannot mark files that do not exist.
+
+    Safe to call twice: it is a no-op once the report exists, so it never
+    re-trains a submission model or overwrites a good artifact with a worse one.
+    """
+    if _already_finalized(root):
+        return
+    from . import graph as graph_mod
+    state = _load_state(root, args)
+    state["stop_reason"] = reason
+    print(f"\nfinalizing from disk ({reason}) — {state['iteration']} iterations on record...")
+    try:
+        out = graph_mod.finalize(state)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"finalize failed: {type(e).__name__}: {e}", file=sys.stderr)
+        print("runs.jsonl / results.tsv / concepts.json are still on disk and "
+              "still gradeable; re-run `finalize` once the cause is fixed.",
+              file=sys.stderr)
+        return
+    r = out["resource_report"]
+    print(f"wrote resource_report.json — {r['iterations']} iterations, "
+          f"{r['elapsed_seconds'] / 3600:.2f}h, "
+          f"{r['tokens_in_total']}+{r['tokens_out_total']} tokens, "
+          f"{r.get('recovery_events', 0)} recovery events, "
+          f"{r.get('manual_interventions', 0)} manual interventions.")
+    print(f"submission: {r['submission'] or 'FAILED — ' + str(r['submission_note'])}")
+
+
+def cmd_finalize(args: argparse.Namespace) -> None:
+    root = repo_root()
+    if args.force and _already_finalized(root):
+        Path(root, "resource_report.json").unlink()
+    finalize_from_disk(root, args, reason=args.reason)
+
+
+# ------------------------------------------------------------- note ------
+def cmd_note(args: argparse.Namespace) -> None:
+    """Record an intervention the harness cannot detect for itself.
+
+    Resumes and hand-edited seeds are caught automatically. Everything else --
+    editing source between runs, restarting after a manual dependency install,
+    steering the agent toward a direction -- is invisible to the process and
+    has to be declared. An honest count with reasons a judge can read is worth
+    more than an unsupported claim of zero.
+    """
+    root = repo_root()
+    ilog = InterventionLog(Path(root))
+    rec = ilog.record("manual_note", args.reason)
+    print(f"recorded: [{rec.kind}] {rec.reason}")
+    print(f"total interventions this run: {ilog.count} — {ilog.summary()}")
 
 
 # ----------------------------------------------------------- dashboard ----
@@ -234,6 +332,25 @@ def main() -> None:
     p_run.add_argument("--retry-cap", type=int, default=3, help="blind retries on 'error' before forced pivot")
     p_run.add_argument("--tune-cap", type=int, default=3, help="tune loops on one concept before forced expand")
     p_run.set_defaults(func=cmd_run)
+
+    p_fin = sub.add_parser("finalize",
+                           help="write submission.csv + resource_report.json from disk")
+    p_fin.add_argument("--data-dir", default="./KuaiRand-Pure/data")
+    p_fin.add_argument("--model", default=bootstrap.DEFAULT_MODEL)
+    p_fin.add_argument("--max-iterations", type=int, default=50)
+    p_fin.add_argument("--max-wall-hours", type=float, default=6.0)
+    p_fin.add_argument("--epsilon", type=float, default=0.002)
+    p_fin.add_argument("--n-plateau", type=int, default=3)
+    p_fin.add_argument("--retry-cap", type=int, default=3)
+    p_fin.add_argument("--tune-cap", type=int, default=3)
+    p_fin.add_argument("--reason", default="manual finalize")
+    p_fin.add_argument("--force", action="store_true",
+                       help="rebuild even if resource_report.json already exists")
+    p_fin.set_defaults(func=cmd_finalize)
+
+    p_note = sub.add_parser("note", help="record a manual intervention (Deliverable 3)")
+    p_note.add_argument("reason", help="what you did and why, in one line")
+    p_note.set_defaults(func=cmd_note)
 
     p_dash = sub.add_parser("dashboard", help="regenerate results_dashboard.html")
     p_dash.set_defaults(func=cmd_dashboard)

@@ -89,9 +89,22 @@ def classify_outcome(state: ResearchState) -> dict:
 
 def update_counters(state: ResearchState) -> dict:
     outcome = state["outcome"]
+    # The plateau counter answers "have we run out of ideas?", so only a
+    # *completed* experiment that failed to improve is evidence for that. A
+    # crash is evidence of a bug, and it already has its own budget
+    # (retry_cap -> repair -> pivot). Counting crashes here meant three
+    # consecutive broken experiments converged the whole run and shipped early
+    # -- the agent stopping because it hit bugs, not because it was done.
+    # max_iterations remains the hard stop, so this cannot loop forever.
+    if outcome == "improved":
+        no_improve = 0
+    elif outcome == "error":
+        no_improve = state["no_improve_count"]
+    else:
+        no_improve = state["no_improve_count"] + 1
     updates: dict = {
         "iteration": state["iteration"] + 1,
-        "no_improve_count": 0 if outcome == "improved" else state["no_improve_count"] + 1,
+        "no_improve_count": no_improve,
     }
     concepts = [dict(c) for c in state["concepts"]]
     active = next((c for c in concepts if c["id"] == state["active_concept_id"]), None)
@@ -123,12 +136,21 @@ def write_log(state: ResearchState) -> dict:
         "hypothesis": state.get("idea_hypothesis", ""),
         "description": state.get("idea_description", ""),
         "files_changed": sorted(state.get("edited_files", {}).keys()),
+        # Deliverable 3, verbatim: "The code diff applied". Filenames alone are
+        # not a diff, and runs/ is gitignored, so without this the graded log
+        # says which files moved and nothing about what changed in them.
+        "diff": state.get("diff", ""),
         "checkpoint_id": checkpoint_id,
         "exp_dir": state["exp_dir"],
         "seed": state.get("seed_used", 0),
         "metrics": {
             "valid_primary": state.get("valid_primary", 0.0),
             "test_primary": state.get("test_primary", 0.0),
+            # Per-metric, because the judging formula is
+            # mean(delta(GAUC), delta(nDCG@5)) and the results table must show
+            # both rather than only the primary they average to.
+            "valid": state.get("valid_metrics", {}),
+            "test": state.get("test_metrics", {}),
         },
         "outcome": state["outcome"],
         "mode": state["mode"],

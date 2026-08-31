@@ -48,11 +48,16 @@ The only git this whole harness touches is `setup`'s branch creation
 from __future__ import annotations
 
 import time
+from dataclasses import asdict
 from pathlib import Path
 
+from langgraph.errors import NodeError
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command
 
-from . import bootstrap, tools
+from tippytop.runlog import InterventionLog
+
+from . import bootstrap, resilience, tools
 from .critic import build_critic_graph
 from .experiment import build_experiment_graph
 from .propose import build_propose_graph
@@ -85,9 +90,33 @@ def router(state: ResearchState) -> dict:
     outcome = state["outcome"]
 
     if outcome == "error" and state["retry_count"] < state["retry_cap"]:
-        return {"retry_count": state["retry_count"] + 1, "retry_now": True}
+        # A blind reroll at a new seed can only help a *stochastic* failure.
+        # For a NameError or a shape mismatch it is a guaranteed no-op that
+        # still costs a full training run -- three of those spend ~30 minutes
+        # of a six-hour budget learning nothing. So: classify first, reseed
+        # only when the error text actually looks non-deterministic, otherwise
+        # hand the traceback back to the model and ask for a fix. This is
+        # MLE-STAR's debugging module, bounded by retry_cap (=3, the same
+        # budget AIDE publishes as search.max_debug_depth).
+        err = state.get("failure_error", "")
+        strategy = resilience.repair_strategy(err, state["retry_count"])
+        resilience.log_recovery(state["repo_root"], resilience.recovery_event(
+            iteration=state["iteration"], layer="experiment",
+            kind=resilience.classify_run_error(err) + "-crash",
+            action=strategy,
+            detail=f"attempt {state['retry_count'] + 1}/{state['retry_cap']}: {err[:300]}"))
+        if strategy == "reseed":
+            return {"retry_count": state["retry_count"] + 1, "retry_now": True}
+        # Repair goes the long way round -- through check_convergence, so the
+        # iteration and wall-clock caps still bind, then into propose with
+        # mode='repair'. It must NOT short-circuit back into experiment: the
+        # code has to be rewritten before it is worth running again.
+        return {"retry_count": state["retry_count"] + 1, "retry_now": False,
+                "mode": "repair", "repair_error": err,
+                "repair_exp_dir": state.get("exp_dir", "")}
 
-    updates: dict = {"retry_count": 0, "retry_now": False}
+    updates: dict = {"retry_count": 0, "retry_now": False,
+                     "repair_error": "", "repair_exp_dir": ""}
     if outcome == "error":
         # Retries exhausted on a persistently-broken concept — abandon it.
         concepts = _close_active_concept(
@@ -129,8 +158,56 @@ def check_convergence(state: ResearchState) -> dict:
     elapsed = time.time() - state["start_time"]
     plateau = state["no_improve_count"] >= state["n_plateau"]
     out_of_iters = state["iteration"] >= state["max_iterations"]
-    out_of_time = elapsed >= state["max_wall_seconds"]
-    return {"converged": bool(plateau or out_of_iters or out_of_time)}
+
+    # The old check only asked whether the budget was ALREADY spent, so at
+    # 5h58m it would start an experiment that runs to the 10-minute cap,
+    # overshoot the stated limit, and leave nothing for finalize -- which is
+    # how a run with 40 good iterations ends with no submission.csv. Ask
+    # instead whether there is room for another experiment AND for shipping.
+    can_run, why = resilience.budget_allows_another_experiment(
+        elapsed, state["max_wall_seconds"], state["history"])
+    out_of_time = not can_run
+
+    # propose is terminally unavailable (see _propose_error_handler): stop and
+    # ship what is on disk rather than dying with the deliverables unwritten.
+    llm_down = bool(state.get("llm_unavailable"))
+
+    reason = ("llm-unavailable" if llm_down else
+              "plateau" if plateau else
+              "max-iterations" if out_of_iters else
+              f"budget ({why})" if out_of_time else "")
+    converged = bool(plateau or out_of_iters or out_of_time or llm_down)
+    if converged and out_of_time and not (plateau or out_of_iters or llm_down):
+        resilience.log_recovery(state["repo_root"], resilience.recovery_event(
+            iteration=state["iteration"], layer="budget", kind="deadline",
+            action="finalize-early", detail=why))
+    return {"converged": converged, "stop_reason": reason}
+
+
+def _propose_error_handler(state: ResearchState, error: NodeError) -> Command:
+    """propose has exhausted its retries. Ship, do not die.
+
+    Reached only after resilience.LLM_RETRY has spent five attempts with
+    exponential backoff, or immediately for an error the policy classifies as
+    permanent (a bad API key will not fix itself in 30 seconds of waiting).
+    Either way the correct autonomous move is the same: stop proposing and
+    finalize the work already on disk. Dying here is what turned a run with 30
+    valid iterations into a submission with zero deliverables.
+    """
+    # The `error: NodeError` annotation is load-bearing: LangGraph injects the
+    # NodeError only when the parameter is annotated with that exact type. An
+    # unannotated `error` parameter makes the handler itself raise TypeError --
+    # i.e. the failsafe fails, which is the worst possible way to fail. Covered
+    # by test_a_provider_outage_ends_at_finalize_not_at_a_traceback.
+    exc = getattr(error, "error", error)
+    detail = f"{type(exc).__name__}: {exc}"
+    resilience.log_recovery(state["repo_root"], resilience.recovery_event(
+        iteration=state.get("iteration", 0), layer="llm",
+        kind=type(exc).__name__, action="finalize-early", detail=detail))
+    return Command(update={"llm_unavailable": detail,
+                           "stop_reason": f"llm-unavailable ({type(exc).__name__})",
+                           "converged": True},
+                   goto="finalize")
 
 
 def _route_after_convergence(state: ResearchState) -> str:
@@ -158,6 +235,55 @@ def finalize(state: ResearchState) -> dict:
             1 for c in state["concepts"] if any(a["outcome"] == "improved" for a in c["attempts"])
         ),
     }
+    # Deliverable 3 asks for the manual-intervention count explicitly, and
+    # Impact & Relevance (20%) is scored primarily on it. Read it from the
+    # durable log rather than from state: a run that was interrupted and
+    # resumed has that resume recorded on disk, where an in-memory counter
+    # would have reset to zero and reported a flattering fiction.
+    # ---- the results table, per metric (Deliverable 4) --------------------
+    # score_dataset = mean over m of (score_agent(m) - score_baseline(m)) for
+    # m in {GAUC, nDCG@5}. Because primary is defined as mean(GAUC, nDCG@5),
+    # that mean of deltas equals delta(primary) exactly -- but the deliverable
+    # asks for the two metrics, so both are recorded here rather than left for
+    # someone to reconstruct by hand at 3am.
+    improved = [h for h in state["history"] if h.get("outcome") == "improved"]
+    best_rec = max(improved, key=lambda h: h["metrics"]["valid_primary"], default=None)
+    base = bootstrap.load_baseline_metrics(root)
+    agent_valid = (best_rec or {}).get("metrics", {}).get("valid", {}) if best_rec else {}
+    agent_test = (best_rec or {}).get("metrics", {}).get("test", {}) if best_rec else {}
+    report["baseline_metrics"] = base
+    report["best_valid_metrics"] = agent_valid
+    report["best_test_metrics"] = agent_test
+    if base and agent_test:
+        deltas = {m: round(agent_test.get(m, 0.0) - base["test"].get(m, 0.0), 6)
+                  for m in ("GAUC", "nDCG@5")}
+        report["test_delta_vs_baseline"] = deltas
+        report["score_dataset"] = round(sum(deltas.values()) / len(deltas), 6)
+    else:
+        report["test_delta_vs_baseline"] = {}
+        report["score_dataset"] = None
+        report["results_note"] = (
+            "no experiment beat the baseline, or per-metric scores are absent "
+            "from runs.jsonl (a run logged before per-metric capture was added)")
+
+    report["stop_reason"] = state.get("stop_reason") or "converged"
+    if state.get("llm_unavailable"):
+        report["llm_unavailable"] = state["llm_unavailable"]
+    # Robustness (20%) is graded on recovery, and a run that recovered quietly
+    # is indistinguishable from one that never had a problem. This is the
+    # evidence, per event, with what the agent did about it.
+    events = resilience.read_recovery(root)
+    report["recovery_events"] = len(events)
+    report["recovery_by_action"] = {
+        a: sum(1 for e in events if e.get("action") == a)
+        for a in sorted({e.get("action", "?") for e in events})
+    }
+
+    ilog = InterventionLog(Path(root))
+    report["manual_interventions"] = ilog.count
+    report["intervention_summary"] = ilog.summary()
+    report["interventions"] = [asdict(r) for r in ilog.records]
+
     submission_path = str(Path(root, "submission.csv"))
     if state.get("best_exp_dir"):
         ok, msg = tools.make_submission(state["best_exp_dir"], root, state["data_dir"], submission_path)
@@ -176,7 +302,17 @@ def build_graph():
     g = StateGraph(ResearchState)
     g.add_node("bootstrap", bootstrap_node)
     g.add_node("eda", eda)
-    g.add_node("propose", build_propose_graph())
+    # The ONLY node that touches a network the run does not control, and the
+    # one whose failure used to kill everything. Retries transient provider
+    # errors (429/529/timeouts) with exponential backoff; on a permanent error,
+    # or once the attempts are spent, the handler routes to finalize instead of
+    # raising. Deliberately NOT applied via set_node_defaults: retrying
+    # `experiment` would silently re-run training on an already-broken idea,
+    # and retrying `critic` would double-write runs.jsonl.
+    g.add_node("propose", build_propose_graph(),
+               retry_policy=resilience.LLM_RETRY,
+               error_handler=_propose_error_handler,
+               destinations=("experiment", "finalize"))
     g.add_node("experiment", build_experiment_graph())
     g.add_node("critic", build_critic_graph())
     g.add_node("router", router)

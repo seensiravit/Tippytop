@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-Mode = Literal["tune", "expand", "pivot"]
+Mode = Literal["tune", "expand", "pivot", "repair"]
 Outcome = Literal["improved", "parity", "failed", "error"]
 # "parity" (|delta| <= epsilon) is distinct from "failed" (a clear regression):
 # not-better is not the same as worse, and a first implementation of a good
@@ -120,6 +120,9 @@ class ResearchState(TypedDict):
     wall_seconds: float
     valid_primary: float
     test_primary: float
+    valid_metrics: dict       # {GAUC, nDCG@5, primary} — Deliverable 4 is per-metric
+    test_metrics: dict
+    diff: str                 # unified diff applied this iteration (Deliverable 3)
 
     # ---- critic sub-graph scratch ----
     delta: float
@@ -127,6 +130,10 @@ class ResearchState(TypedDict):
 
     # ---- router scratch ----
     retry_now: bool
+    repair_error: str         # traceback handed to propose in mode='repair'
+    repair_exp_dir: str       # the folder holding the code that actually failed
+    llm_unavailable: str      # non-empty => propose is terminally down; ship what we have
+    stop_reason: str          # why the loop ended, for the resource report
 
     # ---- finalize output ----
     resource_report: dict
