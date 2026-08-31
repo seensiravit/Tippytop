@@ -144,7 +144,17 @@ Dataset-derived edges (judge-checkable, not in any shared README):
   9.2% all-positive (nDCG pinned to 1). Consider upweighting movable users in
   the TRAINING loss only — never touch how eval scores them, that's fixed.
 - Eval lists are short (~7 impressions/user) — listwise objectives are cheap here.
-- Seed averaging on the final submission is cheap variance insurance.
+- Rank-averaging inside run_fm is the largest gain currently available, and it
+  is not being taken. Fit N models with different seeds, convert each one's
+  scores to WITHIN-USER ranks, average the ranks, return that. Ranks not raw
+  scores: differently-trained models are on different scales, and only
+  within-user order is scored anyway. Replicated at +0.0013 on two disjoint
+  seed groups, and mixing families (FM + FFM) beats more members of one family,
+  because members of a family share a bias.
+  BUDGET IT: the harness kills a run at 10 minutes. encode() once and reuse it,
+  then each fit costs ~60-90s, so 4-6 members is the safe range. Do not fit
+  more than 6 -- a timeout scores nothing at all, and the gain from 6 to 12
+  members is inside the noise band anyway.
 
 Measured, and it changes how you must READ a ranking-loss result:
 - A listwise/pairwise loss needs a user's rows in one batch. That BATCHING alone
