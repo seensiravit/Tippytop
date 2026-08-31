@@ -272,8 +272,8 @@ def test_a_dead_provider_ships_instead_of_dying(tmp_path):
     out = graph_mod.check_convergence({
         "start_time": 0.0, "no_improve_count": 0, "n_plateau": 3, "iteration": 5,
         "epsilon": 0.002, "max_iterations": 50, "max_wall_seconds": 10 ** 12,
-        "history": [], "repo_root": str(tmp_path), "llm_unavailable": "OverloadedError: ..."})    assert out["converged"] and out["stop_reason"] == "llm-unavailable"
-
+        "history": [], "repo_root": str(tmp_path), "llm_unavailable": "OverloadedError: ..."})
+    assert out["converged"] and out["stop_reason"] == "llm-unavailable"
 
 def test_propose_error_handler_routes_to_finalize(tmp_path):
     class _Err:
