@@ -127,8 +127,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--split", default="valid", choices=["valid", "test"])
     p.set_defaults(func=cmd_score)
 
-    from .agent.cli import register_agent_subparser
-    register_agent_subparser(sub)
     return ap
 
 

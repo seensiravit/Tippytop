@@ -106,7 +106,7 @@ scores = model.predict(dataset, split)  # one float per row, in row order
 | `training/runner.py` | The shared load → fit → score → log loop. |
 | `submission.py` | Write and validate submission CSVs. |
 | `cli.py` | `python -m tippytop run|submit|check|score` |
-| `agent/` | **An earlier agent** (linear loop, Gemini). Kept for offline `--llm mock` testing during development — **remove before submission**, see *Decisions*. |
+| `runlog/` | `interventions.py` — the graded manual-intervention count, derived from a durable JSONL log; `redact.py` — scrubs hidden-test signal out of text bound for a prompt. Both wired into `autoresearch_lg`; see *Decisions*. |
 
 Adding a model is one file plus one import line in `models/__init__.py`.
 
@@ -163,50 +163,162 @@ install, but the organizers permit any open-source library, and LightGBM's
 
 ## Decisions
 
-### Two agents during development — one at submission
+### One agent — the second lane has been removed
 
-`autoresearch_lg/` is **the** agent and the deliverable. `src/tippytop/agent/` is
-an earlier implementation (linear loop, Gemini) that is **deliberately retained
-during development**, for two reasons:
+`autoresearch_lg/` is **the** agent and the deliverable. An earlier
+implementation (linear loop, Gemini) lived at `src/tippytop/agent/` and was kept
+during development for offline `--llm mock` smoke tests and as a fallback. It has
+been **deleted**: the brief asks for *an* autonomous ML research agent, and a repo
+containing two of them — two loops, two providers, two prompt sets — makes a judge
+guess which one produced the result, while dragging `GEMINI_API_KEY` and a second
+dependency path into the setup instructions for nothing.
 
-- **Offline testing.** It runs the full loop with `--llm mock` — no API key, no
-  tokens. The LangGraph harness has no equivalent: only `cli graph` and
-  `cli dashboard` run without a key, and neither exercises the loop. That makes
-  it the cheap way to smoke-test plumbing changes.
-- **A working fallback**, if the LangGraph harness breaks close to the deadline.
+Two modules were rescued from it before the delete rather than going down with it,
+because neither was ever agent-specific and both are graded:
 
-> ### ⚠️ Remove it before submitting
->
-> This is a decision, not an open question. The deliverable is *"an autonomous ML
-> research agent"* — a repo containing two of them, with two loops, two LLM
-> providers and two prompt sets, makes a judge guess which one produced the
-> result. It also drags `GEMINI_API_KEY` and a second dependency path into the
-> setup instructions for no benefit.
->
-> **Do this once the LangGraph agent has produced the final submission run:**
->
-> ```bash
-> git rm -r src/tippytop/agent
-> git rm tests/test_agent_convergence.py tests/test_agent_end_to_end.py \
->        tests/test_agent_gemini_parse.py tests/test_agent_guard.py \
->        tests/test_agent_journal.py tests/test_agent_parsing.py \
->        tests/test_agent_sandbox.py
-> git rm docs/agent.md
-> ```
->
-> Then two edits: delete `src/tippytop/cli.py` lines 130–131 (the
-> `register_agent_subparser` import and call at the end of `build_parser`), and
-> drop the `GEMINI_API_KEY` block from `.env.example`. Finally:
->
-> ```bash
-> uv run pytest tests/ -q     # must still pass (34 → 27 tests)
-> ```
->
-> `src/tippytop/models/` and `losses/` stay — those are the manual-experiment lane
-> and are referenced by the write-up. Only `agent/` goes.
->
-> Removing it is a small commit. Un-removing it at 2am is not — which is exactly
-> why it stays until the final run is in hand, and not a day longer.
+| module | now at | why it survives |
+|---|---|---|
+| `interventions.py` | `src/tippytop/runlog/` | Deliverable 3 requires the manual-intervention count; Impact & Relevance (20%) is scored on it |
+| `redact.py` | `src/tippytop/runlog/` | scrubs hidden-test signal out of text on its way into a prompt — what makes the walled-validation claim true rather than merely asserted |
+
+Both are now wired into `autoresearch_lg`, which is where they should have been:
+
+- `experiment.run_and_evaluate` scrubs the crashed-run stdout tail before it
+  becomes `failure_error`. That string is fed back to the proposing model by
+  `context.build_context`, and a run that crashes *after* `baseline.py` prints its
+  summary block carries the test primary in exactly those characters. It was the
+  one hole in an otherwise validation-only prompt.
+- `graph.finalize` reads the durable intervention log and writes
+  `manual_interventions`, `intervention_summary` and the full reason list into
+  `resource_report.json`.
+- `cli run` detects a resume (runs.jsonl already holds iterations) and records it
+  whether or not the operator declares it; `cli note "<reason>"` records the ones
+  the harness cannot see.
+- `tools.RUN_ARTIFACTS` archives `interventions.jsonl` with everything else, so a
+  fresh `setup` cannot inherit the previous run's count.
+
+> **A trap worth naming.** The removal recipe this file used to carry said
+> `git rm tests/test_agent_*.py`. That glob also matches
+> `tests/test_agent_parity_outcome.py`, which tests **`autoresearch_lg`'s own
+> router**, not the deleted lane. It has been renamed
+> `tests/test_router_parity_outcome.py` so the name no longer sets the trap.
+
+After the removal and the failure-policy work: **200 tests pass** (84 surviving + 16 new in
+`tests/test_run_integrity.py`, which covers the two rescued modules at their new
+wiring points and the final-run packager's refusals).
+
+### Failure policy — four layers, and the one that used to kill the run
+
+The loop already routed every *expected experiment* failure into a
+`FailureRecord`: a bad diff, a training crash, a timeout, an unparseable summary
+each had its own edge to `emit_failure`. What it had no policy for were the
+failures that are not the experiment's. `autoresearch_lg/resilience.py` holds
+that policy; the table is the whole design.
+
+| layer | example | before | now |
+|---|---|---|---|
+| **L1** transient infra | 429, 529 overloaded, read timeout | one unhandled exception propagated out of two sub-graphs and out of `.stream()` — **the run died** | SDK `max_retries=6` **plus** a LangGraph `RetryPolicy` on `propose` (5 attempts, exponential backoff, jitter) |
+| **L2** malformed output | no `tool_use` block, missing key, bad syntax | syntax only; `next(...)` raised `StopIteration` | typed `ProposalError` + payload validation; regenerate up to 3× (AIDE's `search.max_debug_depth`) |
+| **L3** defective code | `NameError`, shape mismatch, NaN, timeout | blind reroll at a new seed — a guaranteed no-op on a deterministic bug, at the cost of a full training run each time | classify the error; **reseed only if it looks stochastic**, otherwise **repair** with the traceback fed back (MLE-STAR's debugging module) |
+| **L4** terminal | budget spent, provider gone, Ctrl+C, unexpected crash | `finalize` was reachable **only** through clean convergence | `error_handler` routes a dead provider to `finalize`; `cmd_run` finalizes in a `finally`; `cli finalize` rebuilds from disk |
+
+**L4 is the one that mattered.** A run that died at iteration 30 of 50 left
+`runs.jsonl` on disk with thirty good iterations and produced no
+`submission.csv` and no `resource_report.json` — Deliverables 3 and 4 empty,
+roughly 40% of the rubric, for work that had already been done.
+
+Two related bugs found while wiring it:
+
+- **Crashes counted toward the plateau.** `no_improve_count` incremented on any
+  non-improvement, so with `n_plateau=3` *three consecutive broken experiments
+  converged the whole run* — the agent stopping because it hit bugs, not because
+  it was out of ideas. Errors now have their own budget (`retry_cap` → repair →
+  pivot) and are skipped by the plateau counter, in `critic.update_counters`
+  **and** in `bootstrap.reconstruct_counters`, which must agree or a resumed run
+  converges at a different point than an uninterrupted one.
+- **The budget check was backward-looking.** It asked whether the budget was
+  already spent, so at 5h58m it would start an experiment that runs to the
+  10-minute cap, overshoot the stated 6h, and leave nothing for finalize. It now
+  asks whether there is room for another experiment *and* for shipping, using a
+  rolling **median** experiment time (a mean would let one 600s timeout scare it
+  into stopping early) and a 7-minute finalize reserve.
+
+Deliberate non-choices, because the second-order cost is worse than the benefit:
+
+- **No `set_node_defaults(retry_policy=...)`.** Retrying `experiment` would
+  silently re-run training on an already-broken idea; retrying `critic` would
+  double-write `runs.jsonl`. Only `propose` touches a network the run does not
+  control, so only `propose` retries. Asserted in `tests/test_resilience.py`.
+- **No node `timeout=`.** LangGraph rejects `timeout` on *sync* nodes at compile
+  time, and every node here is sync. The 10-minute experiment cap already lives
+  in `tools.RUN_TIMEOUT_SECONDS`, where it belongs.
+- **Permanent errors are not retried.** A bad API key will not fix itself, and
+  five exponential backoffs before dying spend the wall-clock finalize needs.
+  `resilience.is_transient` splits the two by exception class and HTTP status.
+
+Every recovery is appended to `recovery.jsonl` and summarised in
+`resource_report.json` (`recovery_events`, `recovery_by_action`, `stop_reason`).
+Robustness is 20% of the score and is graded on recovery — a run that recovered
+silently is indistinguishable from one that never had a problem.
+
+Sources: MLE-STAR (NeurIPS 2025) for repair-then-fall-back-to-last-known-good;
+AIDE `aide/utils/config.yaml` for the debug budget of 3; LangGraph's own
+fault-tolerance primitives rather than a hand-rolled loop inside a node, which
+the checkpointer cannot see.
+
+### Three seams where a bad proposal looks like a good result
+
+An adversarial read of the loop asks a different question from "does it handle
+failures": *where can a plausible-looking proposal produce a result that is
+wrong rather than absent?* There are exactly three, because the agent's editable
+surface is small — it writes two files into one folder, the harness runs them,
+and a regex reads a number back out.
+
+**Seam 1 — the model chooses the paths it writes.** `write_experiment_files` did
+`Path(exp_dir, path).write_text(...)` with `path` coming straight from the LLM.
+`"../../baseline.py"` resolves outside the folder and overwrites the frozen root
+kit; `"evaluate.py"` replaces the scoring spec that `make_experiment_dir` copied
+in moments earlier, so the experiment is then scored **by the model's own
+evaluator**. That is the highest-reward move available to anything optimising the
+number this harness reads, and it would appear in `runs.jsonl` as a triumph.
+`tools.safe_experiment_path` now refuses protected names, absolute paths (POSIX
+and Windows), and anything that leaves the folder after resolution — and it
+validates every path *before* writing any of them, because a half-written
+experiment still runs and still gets scored.
+
+**Seam 2 — the harness believes the number the run prints.** `parse_summary` read
+`([\d.]+)` with no bound. `primary 99.0` parsed fine and would become the
+incumbent permanently: `best_valid_primary` only moves up, every later proposal
+is built from that folder, and `finalize` ships it. `mean(GAUC, nDCG@5)` cannot
+leave `[0, 1]`, so that is now enforced. The same regex also matched the `1` of
+`1e9` and reported a perfect 1.0; a negative lookahead fixes it. `collect_metrics`
+reports "no summary block" and "primary outside [0, 1]" as *different* failures,
+since the model can only repair what it is told.
+
+**Seam 3 — every later proposal is built from the incumbent's folder.** If
+`best_exp_dir` has been deleted, `read_experiment_files` raised a bare `OSError`
+inside `llm_generate` — a node whose retry policy would then back off five times
+and declare the *provider* dead, which is the wrong diagnosis and the wrong
+response to a local, permanent problem. It now falls back to the pristine root
+files and **tells the model it is starting from baseline**, rather than silently
+handing over baseline code labelled as the current best.
+
+Three smaller ones from the same pass:
+
+- A duplicated path in `files[]` was silently resolved last-wins by the dict
+  comprehension. It is now rejected: a training run on code nobody chose costs
+  more than one regeneration.
+- The stochastic/deterministic classifier is a regex, so
+  `ValueError: could not convert string to float: 'nan'` earned a free reseed
+  that could not possibly work. Named deterministic exceptions now take
+  precedence, and quoted spans are stripped before the stochastic match — a
+  quoted token is data, not a numerical event.
+- An unsafe path is a defective *proposal*, so it lands on the failure branch
+  with its reason attached and becomes a repair, not a traceback.
+
+`tests/test_integrity.py` covers all of these plus the exact epsilon boundaries
+(`+0.002` and `-0.002` are both `parity`; only strictly beyond is `improved` /
+`failed`).
 
 ### Libraries are open — matching the brief, not restricting past it
 

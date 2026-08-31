@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from tippytop.agent.interventions import InterventionLog
+from tippytop.runlog.interventions import InterventionLog
 
 
 def test_fresh_run_records_nothing(tmp_path):

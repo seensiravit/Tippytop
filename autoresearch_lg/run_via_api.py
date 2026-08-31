@@ -46,9 +46,18 @@ def main() -> None:
     print(f"thread: {thread['thread_id']}")
     print(f"watch live: {studio_url}")
 
+    # LangGraph counts *super-steps*, not iterations, and defaults to 25. One
+    # experiment costs several (propose -> experiment sub-graph -> critic ->
+    # router -> check_convergence), so the default aborts a run at roughly
+    # iteration 4 with GraphRecursionError -- which reads exactly like the agent
+    # deciding to stop. cli.py sets this; this path and the Studio path did not.
+    # Same formula, so a run started here behaves like a run started there.
+    recursion_limit = (state["max_iterations"] - state["iteration"] + 5) * 25 + 20
+
     last_history_len = state["iteration"]
     for chunk in client.runs.stream(
         thread["thread_id"], "autoresearch", input=state, stream_mode="values",
+        config={"recursion_limit": recursion_limit},
     ):
         data = chunk.data
         if not isinstance(data, dict) or "history" not in data:

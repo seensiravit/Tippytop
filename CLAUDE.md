@@ -14,7 +14,8 @@ Only *within-user relative order* matters.
 **Goal:** beat the FM baseline **primary 0.5946** (test). Oracle ceiling is
 **0.8645**, not 1.0 — measure headroom against 0.8645 (~0.27 remaining).
 
-This is a **monorepo with two lanes** sharing one frozen scoring script. Read
+This is a **monorepo with two lanes** — the agent and a manual model library —
+sharing one frozen scoring script. Read
 [`ARCHITECTURE.md`](ARCHITECTURE.md) before making structural changes.
 
 ## Golden rules
@@ -47,6 +48,9 @@ autoresearch_lg/       THE AGENT (LangGraph) — primary deliverable
   propose.py           think: prompt assembly, LLM call, source validation
   context.py           build_context (history) + HEADROOM (candidate directions)
   experiment.py        do: apply, train, score — every step has a failure branch
+  resilience.py        failure POLICY: what to retry, what to repair, when to
+                       stop and ship. L1 transient / L2 bad output / L3 bad
+                       code / L4 terminal — see ARCHITECTURE.md
   critic.py            judge: compare, keep/revert, classify, write run log
   bootstrap.py         CONFIG_DEFAULTS + CONSTRAINTS (the system prompt)
   state.py             ResearchState threaded through every node
@@ -66,10 +70,11 @@ src/tippytop/          THE MODEL LIBRARY — fast manual experiments
   models/ensemble.py   fm_seedavg / fm_blend / fm_diverse (rank-averaged)
   training/runner.py   shared train/evaluate loop + leaderboard logging
   submission.py        write_submission / read_submission
-  agent/               EARLIER agent (Gemini). Kept ONLY for offline --llm mock
-                       testing. REMOVE BEFORE SUBMISSION — ARCHITECTURE.md
+  runlog/              interventions.py (the graded manual-intervention count)
+                       + redact.py (scrubs test signal out of prompt text).
+                       Wired into autoresearch_lg — see ARCHITECTURE.md
 
-tests/                 34 tests, both lanes
+tests/                 200 tests
 results/leaderboard.md shared scoreboard
 docs/                  tutorial.md, project-structure.md, kit/ (organizers' docs)
 KuaiRand-Pure/         the data (gitignored)     runs/  agent output (gitignored)
@@ -91,7 +96,10 @@ uv run langgraph dev --no-browser                # Studio; submit {} as input
 uv run python -m tippytop run    --model fm --no-log
 uv run python -m tippytop submit --model fm --split test --out results/submissions/fm.csv
 uv run python -m tippytop check  <csv> --split test
-uv run pytest tests/ -q                          # 34 tests
+uv run python -m autoresearch_lg.cli note "<reason>"  # log an intervention
+uv run python scripts/package_final_run.py        # gate + collect deliverables
+uv run python -m autoresearch_lg.cli finalize     # ship from disk, any time
+uv run pytest tests/ -q                          # 200 tests
 ```
 
 `--model` = `fm` | `pop` | `random` | `fm_listwise` | `fm_bpr` | `fm_hybrid` |
@@ -139,4 +147,4 @@ LightGBM. See `task.md` and `results/leaderboard.md`.
   0.5953 (seed 0). Over 10 seeds: valid 0.6015 ± 0.0006, test 0.5949 ± 0.0008 —
   seed 42 is a full sigma high, so don't quote it as "the baseline".
 - `autoresearch_lg` needs `ANTHROPIC_API_KEY` (default model `claude-sonnet-5`).
-  `src/tippytop/agent` needs `GEMINI_API_KEY`, except in `--llm mock`.
+  It is the only agent in the repo; the earlier Gemini lane has been removed.

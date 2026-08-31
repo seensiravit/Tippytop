@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from tippytop.agent.redact import scrub, contains_test_signal, REDACTION
+from tippytop.runlog.redact import scrub, contains_test_signal, REDACTION
 
 
 @pytest.mark.parametrize("line", [
