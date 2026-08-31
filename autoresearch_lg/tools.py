@@ -350,47 +350,106 @@ def read_jsonl(path: str) -> list[dict]:
 
 
 # ------------------------------------------------------------- submission -
-def make_submission(best_exp_dir: str, repo_root: str, data_dir: str, out_path: str) -> tuple[bool, str]:
-    """Wraps the kit's own `submit.py --make` (fixed, non-editable file),
-    run from the BEST experiment's folder so it picks up that folder's
-    baseline.py/data.py — submit.py itself gets copied in for this call
-    (Python resolves `import data`/`from baseline import ...` against the
-    directory the *executed script* lives in, so submit.py must physically
-    be alongside the files it should import). out_path is absolute (or
-    relative to the caller's cwd, not to best_exp_dir), so the submission
-    lands wherever the caller wants regardless of where this actually runs.
+_MAKER_SCRIPT = r"""
+# Builds the submission from the AGENT'S OWN model, by running the exact code
+# path the harness scores: baseline.run_fm().
+#
+# It does NOT re-implement training, and it does not name any model class. The
+# kit's `submit.py --make` does both -- it hardcodes `B.FM(dim, k=16, lr=0.001)`
+# and its own 40-epoch loop -- which fails two different ways once an agent is
+# editing baseline.py:
+#
+#   1. LOUD: the agent renames the class (FM -> FFM) and --make dies with
+#      AttributeError. Observed on the first real run.
+#   2. SILENT, and far worse: the agent keeps a class called FM but changes k,
+#      lr, epochs, or anything else inside run_fm. --make then succeeds, writes
+#      a perfectly valid CSV, and submits the ORIGINAL baseline configuration.
+#      Nothing anywhere reports a problem; the score is just wrong.
+#
+# run_fm returns metrics, not per-row scores, so we capture the scores on their
+# way into evaluate(). run_fm's last act is
+# `evaluate(ute, yte, m.predict(Xte))` -- those are exactly the test-split
+# predictions, in row order. Wrapping evaluate is the only way to get them
+# without requiring the agent to change run_fm's return signature, which would
+# be one more contract for it to break.
+import sys
+import baseline as B
+from data import load
+from submit import write_submission
 
-    Only correct if the agent's edits preserved `baseline.FM`'s constructor
-    signature and `.step()`/`.predict()` — true for loss/hyperparameter/
-    feature-level changes, NOT guaranteed for a wholesale architecture swap
-    (DeepFM/DCN/etc, listed as lowest-priority in the headroom anyway).
+split, out_path, data_dir, seed = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+splits = load(data_dir)
+rows = splits[split]
+
+captured = []
+_real_evaluate = B.evaluate
+
+
+def _recording_evaluate(users, labels, scores, *a, **kw):
+    captured.append((len(scores), list(scores)))
+    return _real_evaluate(users, labels, scores, *a, **kw)
+
+
+B.evaluate = _recording_evaluate
+try:
+    B.run_fm(splits, seed=seed, verbose=False)
+finally:
+    B.evaluate = _real_evaluate
+
+# Match by row count: valid is 124,909 rows and test is 170,588, so the split
+# is unambiguous. Last match wins -- run_fm evaluates validation every epoch,
+# and the final call for a split is the one made with the restored best state.
+matches = [sc for n, sc in captured if n == len(rows)]
+if not matches:
+    sizes = sorted({n for n, _ in captured})
+    raise SystemExit(
+        f"run_fm never evaluated {len(rows)} rows (the {split} split). It "
+        f"evaluated {sizes}. The agent's run_fm no longer scores that split, so "
+        "no submission can be built from it.")
+write_submission(out_path, rows, matches[-1])
+print(f"wrote {out_path}: {len(rows):,d} rows (split={split}, agent's own run_fm)")
+"""
+
+
+def make_submission(best_exp_dir: str, repo_root: str, data_dir: str, out_path: str,
+                    seed: int = 0) -> tuple[bool, str]:
+    """Write and validate the test-split submission from the best experiment.
+
+    Runs from the winning experiment's folder so `import baseline` / `import
+    data` resolve to that folder's files (Python puts the executed script's
+    directory first on sys.path), and drives the agent's own `run_fm` rather
+    than a re-implementation of it -- see _MAKER_SCRIPT for why that matters.
+
+    Always ends with `submit.py --check`, which is the gate that actually
+    matters: a malformed or misaligned CSV scores zero regardless of the model
+    behind it, and (user_id, video_id) is not a key on the test split.
+
     Fails loud rather than silently producing a wrong submission.
     """
     if Path(best_exp_dir).resolve() != Path(repo_root).resolve():
         shutil.copy(Path(repo_root, "submit.py"), Path(best_exp_dir, "submit.py"))
     out_abs = str(Path(out_path).resolve())
+    maker = Path(best_exp_dir, "_make_submission.py")
+    maker.write_text(_MAKER_SCRIPT, encoding="utf-8")
 
     make = subprocess.run(
-        [PYTHON, "submit.py", "--make", "--split", "test",
-         "--data_dir", data_dir, out_abs],
+        [PYTHON, maker.name, "test", out_abs, data_dir, str(seed)],
         cwd=best_exp_dir, capture_output=True, text=True, env=_child_env(),
         timeout=RUN_TIMEOUT_SECONDS,
     )
     if make.returncode != 0:
         return False, (
-            "submit.py --make failed — likely because the agent's edits to "
-            "baseline.py no longer match the FM class interface submit.py "
-            f"expects. stderr:\n{make.stderr[-2000:]}"
+            "could not build a submission from the agent's run_fm:\n"
+            f"{(make.stderr or make.stdout)[-2000:]}"
         )
     check = subprocess.run(
         [PYTHON, "submit.py", "--check", "--split", "test",
          "--data_dir", data_dir, out_abs],
-        cwd=best_exp_dir, capture_output=True, text=True, env=_child_env(), timeout=60,
+        cwd=best_exp_dir, capture_output=True, text=True, env=_child_env(), timeout=300,
     )
     if check.returncode != 0:
         return False, f"submission written but failed --check:\n{check.stderr[-2000:]}"
     return True, check.stdout.strip()
-
 
 def save_resource_report(path: str, report: dict) -> None:
     Path(path).write_text(json.dumps(report, indent=2), encoding="utf-8")
