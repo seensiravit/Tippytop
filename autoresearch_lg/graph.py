@@ -156,7 +156,11 @@ def _route_after_router(state: ResearchState) -> str:
 
 def check_convergence(state: ResearchState) -> dict:
     elapsed = time.time() - state["start_time"]
-    plateau = state["no_improve_count"] >= state["n_plateau"]
+    # The brief's rule is a window on the best-so-far curve, not a per-iteration
+    # test -- see resilience.plateaued. The old per-iteration reading stopped a
+    # run that was still improving by +0.001 an iteration, at iteration 4 of 50.
+    plateau, plateau_why = resilience.plateaued(
+        state["history"], state["n_plateau"], state["epsilon"])
     out_of_iters = state["iteration"] >= state["max_iterations"]
 
     # The old check only asked whether the budget was ALREADY spent, so at
@@ -173,7 +177,7 @@ def check_convergence(state: ResearchState) -> dict:
     llm_down = bool(state.get("llm_unavailable"))
 
     reason = ("llm-unavailable" if llm_down else
-              "plateau" if plateau else
+              f"plateau ({plateau_why})" if plateau else
               "max-iterations" if out_of_iters else
               f"budget ({why})" if out_of_time else "")
     converged = bool(plateau or out_of_iters or out_of_time or llm_down)
@@ -182,7 +186,6 @@ def check_convergence(state: ResearchState) -> dict:
             iteration=state["iteration"], layer="budget", kind="deadline",
             action="finalize-early", detail=why))
     return {"converged": converged, "stop_reason": reason}
-
 
 def _propose_error_handler(state: ResearchState, error: NodeError) -> Command:
     """propose has exhausted its retries. Ship, do not die.
