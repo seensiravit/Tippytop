@@ -303,7 +303,7 @@ def append_result(
     line = (
         f"{commit}\t{valid_primary:.6f}\t{test_primary:.6f}\t"
         f"{wall_seconds:.1f}\t{status}\t{desc}\n"
-    )    )
+    )    
     with open(path, "a", encoding="utf-8") as f:
         f.write(line)
 
