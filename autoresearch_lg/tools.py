@@ -295,10 +295,15 @@ def append_result(
     path: str, commit: str, valid_primary: float, test_primary: float,
     wall_seconds: float, status: str, description: str,
 ) -> None:
+    # Tabs were already stripped; NEWLINES were not. A description containing
+    # one splits the row in two, and the orphan line has a single field --
+    # read_results_tsv then dies with "not enough values to unpack (expected 6,
+    # got 1)", which killed run n2 mid-flight. Collapse all whitespace instead.
+    desc = " ".join(str(description).split())
     line = (
         f"{commit}\t{valid_primary:.6f}\t{test_primary:.6f}\t"
-        f"{wall_seconds:.1f}\t{status}\t{description.replace(chr(9), ' ')}\n"
-    )
+        f"{wall_seconds:.1f}\t{status}\t{desc}\n"
+    )    )
     with open(path, "a", encoding="utf-8") as f:
         f.write(line)
 
