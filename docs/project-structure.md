@@ -33,41 +33,58 @@ full goal, the metric's true range, and what's already been measured.
 
 ```
 Tippytop/
-├── README.md                 quick start + rules
-├── task.md                   goal, strategy, measured headroom (READ THIS)
+├── README.md                 quick start + rules + current results
+├── task.md                   goal, measured closed/open headroom (READ THIS)
+├── ARCHITECTURE.md           two-lane design, agent graph, failure policy
 ├── techjam2026_..._agent.md  official problem statement (from the site)
 ├── docs/
 │   ├── tutorial.md           how to get started + add a model
 │   └── project-structure.md  ← this file
 │
-├── the root kit files (evaluate.py etc.)     VENDORED — DO NOT EDIT (evaluate.py = frozen spec)
+├── evaluate.py  data.py  baseline.py  submit.py   FROZEN kit — ONE copy, never edit evaluate.py
 │
-├── src/tippytop/             our package
+├── autoresearch_lg/          THE AGENT (LangGraph) — primary deliverable
+│   ├── graph.py              main loop + router (tune / expand / pivot)
+│   ├── propose.py            think: prompt + LLM call
+│   ├── experiment.py         do: apply, train, score
+│   ├── critic.py             judge: compare, keep/revert, write run log
+│   ├── bootstrap.py          CONFIG_DEFAULTS + CONSTRAINTS (system prompt)
+│   └── cli.py                entry point
+│
+├── src/tippytop/             the model library — fast manual experiments
 │   ├── kit.py                bridge to the frozen kit (load/encode/evaluate)
 │   ├── config.py             paths, baseline/oracle numbers, convergence rule
 │   ├── data/
-│   │   ├── features.py       feature engineering (within-user-varying signals)
-│   │   └── sequences.py      per-user behaviour history (for DIN/SIM)
-│   ├── losses/
-│   │   └── ranking.py        pointwise / BPR / listwise objectives
-│   ├── models/
-│   │   ├── base.py           the Model contract every model implements
-│   │   ├── __init__.py       model registry (@register)
-│   │   └── fm.py             FM baseline adapter (+ your models beside it)
-│   ├── training/runner.py    shared load→encode→fit→score loop
+│   │   ├── dataset.py        load + encode once into Dataset
+│   │   ├── aggregates.py     train-only per-item engagement aggregates
+│   │   ├── features.py       within-user-varying feature engineering
+│   │   └── sequences.py      per-user behaviour history
+│   ├── losses/ranking.py     pointwise / BPR / listwise objectives
+│   ├── models/               one file per model, @register("name")
+│   │   ├── fm.py, ffm.py     FM and field-aware FM (the verified wins)
+│   │   ├── ensemble.py       rank-averaged ensembles
+│   │   ├── fm_rank.py        FM + ranking losses (closed — see leaderboard)
+│   │   ├── fm_multitask.py   FM + auxiliary heads (closed)
+│   │   └── lgbm_rank.py      LightGBM LambdaRank (closed)
+│   ├── runlog/
+│   │   ├── interventions.py  durable manual-intervention counter (graded)
+│   │   └── redact.py         scrubs test signal from error output
+│   ├── stats/                paired bootstrap, power analysis
+│   ├── training/runner.py    shared load→fit→score→log loop
 │   └── submission.py         build/validate submission CSVs
 │
 ├── scripts/
-│   ├── download_data.sh/.ps1 fetch KuaiRand-Pure into the kit
+│   ├── download_data.sh/.ps1 fetch KuaiRand-Pure
+│   ├── package_final_run.py  gate + collect graded deliverables
 │   ├── run_experiment.py     train a model, print metrics vs baseline
 │   └── make_submission.py    model → submission CSV → validate
 │
 ├── experiments/configs/      one YAML per notable run (reproducibility)
 ├── results/
-│   ├── leaderboard.md        shared scoreboard — log every run
+│   ├── leaderboard.md        shared scoreboard — every measured run
+│   ├── final_run/            committed graded artifacts (runs.jsonl, submission.csv, …)
 │   └── submissions/          generated CSVs (git-ignored)
-├── tests/test_harness.py     sanity: random ≈ 0.475
-└── notebooks/                free-form exploration
+└── tests/                    201 tests (pytest tests/ -q)
 ```
 
 ---
@@ -107,9 +124,9 @@ to help (measured) — the payoff is in signals that **vary within a user**
 
 ## 4. How to work day-to-day
 
-1. **Set up once:** `pip install -r requirements.txt`, then
+1. **Set up once:** `uv sync` (or `pip install -e ".[dev]"`), then
    `bash scripts/download_data.sh` (or the `.ps1`).
-2. **Sanity check:** `python -m pytest tests/ -v` — `random` must score ≈ 0.475.
+2. **Sanity check:** `uv run pytest tests/ -q` — `random` must score ≈ 0.475.
    If not, the harness is broken; fix that before trusting any result.
 3. **Branch as `dev/<name>`** (e.g. `dev/alice`) and work in your files.
 4. PR into `main`; put your best valid/test primary in the description.
@@ -143,7 +160,7 @@ to help (measured) — the payoff is in signals that **vary within a user**
 | How to add a model | `src/tippytop/models/README.md` |
 | Current scores | `results/leaderboard.md` |
 
-> Status: the **baselines are done** — `fm` (reproduces 0.5946), `pop`, and
-> `random` all run through the CLI, and submission write/check/score work. The
-> stubs left to fill are the headroom directions: `losses/ranking.py`,
-> `data/sequences.py`, `data/features.py`, and new models beside `models/fm.py`.
+> Status: **converged.** Best result: 6×FM+6×FFM ensemble, valid 0.6045 / test
+> 0.5976 (+0.0031 over baseline). Three of the organisers' suggested directions
+> are closed with controlled measurements (see `results/leaderboard.md`). Graded
+> artifacts are in `results/final_run/`.

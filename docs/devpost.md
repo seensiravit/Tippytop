@@ -1,8 +1,7 @@
 # Devpost draft — Tippytop (TechJam 2026, Track 2)
 
-Everything outside `[ ]` is measured and in the repo. Bracketed fields come from
-`results/final_run/resource_report.json` once the submission run has converged;
-fill them from the file, do not estimate them.
+All fields are filled from `results/final_run/resource_report.json`. Do not
+estimate them — copy from the file.
 
 ---
 
@@ -55,7 +54,7 @@ Primary metric is `mean(GAUC, nDCG@5)`, within-user.
 | **official FM baseline** | — | — | — | **0.5946** | — |
 | FM, our reproduction (10 seeds) | 0.6674 | 0.5363 | 0.6015 ± 0.0006 | 0.5949 ± 0.0008 | +0.0003 |
 | FFM, k=4 (6 seeds) | 0.6676 | 0.5362 | 0.6025 ± 0.0004 | 0.5967 ± 0.0004 | **+0.0021** |
-| **6×FM + 6×FFM, rank-averaged** | [ ] | [ ] | **0.6034** | **0.5978** | **+0.0032** |
+| **6×FM + 6×FFM, rank-averaged** | **0.6711** | **0.5380** | **0.6045** | **0.5976** | **+0.0030** |
 | oracle ceiling | 1.0000 | 0.7289 | 0.8645 | 0.8645 | +0.2699 |
 
 ### Scored per metric
@@ -66,10 +65,10 @@ baseline (`baseline_scores.json`):
 
 | metric (hidden test) | official baseline | ours | **delta** |
 |---|---|---|---|
-| GAUC | 0.6610 | [ ] | [ ] |
-| nDCG@5 | 0.5282 | [ ] | [ ] |
-| primary (mean of the two) | 0.5946 | 0.5978 | **+0.0032** |
-| **score_dataset** = mean of the two deltas | | | **+0.0032** |
+| GAUC | 0.6610 | 0.6646 | **+0.0036** |
+| nDCG@5 | 0.5282 | 0.5307 | **+0.0025** |
+| primary (mean of the two) | 0.5946 | 0.5976 | **+0.0030** |
+| **score_dataset** = mean of the two deltas | | | **+0.00305** |
 
 Because `primary` is *defined* as `mean(GAUC, nDCG@5)`, the mean of the two
 per-metric deltas is algebraically identical to the delta in primary — the two
@@ -92,15 +91,15 @@ threshold). The choice between the two ensembles is not.
 
 | | |
 |---|---|
-| Iterations used | [ ] of 50 |
-| Wall clock | [ ] h of 6 h budget |
-| LLM tokens | [ ] in / [ ] out |
+| Iterations used | **5** of 50 |
+| Wall clock | **1084.6 s ≈ 0.30 h** of 6 h budget |
+| LLM tokens | **37,379 in / 26,104 out** |
 | GPU hours | **0** — CPU-only throughout; FM trains in ~60 s |
-| Concepts opened / confirmed | [ ] / [ ] |
+| Concepts opened / confirmed | **2 / 1** |
 
 ## Manual interventions
 
-**[ ] interventions.** The number is derived from `interventions.jsonl`, not
+**0 interventions.** The number is derived from `interventions.jsonl`, not
 declared: `cli run` records a `resume` whenever it starts against a run directory
 that already holds iterations, whether or not the operator admits it, and
 `cli note "<reason>"` records the ones the harness cannot see. `finalize` copies
@@ -180,9 +179,9 @@ that never had a problem.
 
 | | |
 |---|---|
-| Recovery events | [ ] |
-| Of which repairs / reseeds / retries | [ ] |
-| Why the run stopped | [ ] (`stop_reason`) |
+| Recovery events | **2** |
+| Of which repairs / reseeds / retries | **1 repair, 1 finalize-early** |
+| Why the run stopped | **plateau** — validation best moved ≤ 0.002 over 3 consecutive iterations |
 
 ## What we learned
 

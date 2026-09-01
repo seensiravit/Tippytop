@@ -12,6 +12,9 @@ baseline; a change is real only if Δvalid > +0.002 (noise band).
 | — | ref | oracle ceiling | 1.0000 | 0.7289 | 0.8645 | 0.8645 | perfect ranking |
 
 **Targets:** beat FM 0.5946; measure progress against oracle 0.8645 (headroom ≈ 0.27).
+
+| 2026-09-01 | agent | **6×FM+6×FFM (submission run)** | **0.6711** | **0.5380** | **0.6045** | **0.5976** | **FINAL — agent run, 5 iters, 0 interventions** |
+
 | 2026-08-29 | auto | fm (seed=42) | 0.6674 | 0.5363 | 0.6019 | 0.5957 |  |
 | 2026-08-29 | jovi | fm_listwise (group-batched) | 0.6641 | 0.5346 | 0.5994 | 0.5927 | lr 1e-3, gpb 256 |
 | 2026-08-29 | jovi | fm_hybrid a=0.3 (group-batched) | 0.6639 | 0.5350 | 0.5995 | 0.5936 | mix pointwise+listwise |
@@ -255,4 +258,3 @@ This is the first result in the project that survived its own verification.
 | Cross-family over same-family | marginal | +0.0003 at equal member count — inside noise, claim withdrawn |
 | User sequences (organisers' #2) | untried | ~42 events/user, temper expectations |
 | Unbiased eval on `log_random` | untried | one eval pass, no new modelling |
-| 2026-08-29 | auto | fm_listwise (seed=42) | 0.6591 | 0.5319 | 0.5955 | 0.5892 |  |

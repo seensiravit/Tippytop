@@ -42,7 +42,7 @@ primary improves by **≤ 0.002 (≈2.5σ) for 3 consecutive iterations** (ε = 
 
 ## Constraints & ground rules
 
-- **Runs on CPU, numpy only** — no torch/pandas/sklearn required for the baseline (Python 3.9+).
+- **Runs on CPU** — no GPU required; FM trains in ~60 s. Python 3.11+, managed with `uv`. NumPy-only for the baseline; LightGBM + scikit-learn available via the `[models]` extra.
 - **`evaluate.py` is frozen.** All spec conventions live there. Do not edit it.
 - **Sanity check first:** `--model random` must score primary ≈ 0.475 (±0.001). If not, the harness is broken — fix that before trusting any result.
 - **Submission:** CSV with header `row_id,user_id,video_id,score`, one row per eval row, in the exact
@@ -56,31 +56,41 @@ primary improves by **≤ 0.002 (≈2.5σ) for 3 consecutive iterations** (ε = 
 1. **Adding static features** (video-side or user-side): 0.5940 vs 0.5950 — no change within noise.
 2. **Adding model capacity** (embedding dim k = 8/16/32): 0.5895 / 0.5902 / 0.5887 — flat.
 3. **Pure user-side features contribute exactly 0** — ranking is within-user, so any feature constant
-   across a user's impressions cannot change their order. User attributes matter **only through crosses
-   with item-side features**.
+   across a user's impressions cannot change their order. `user_lv_rate` scores exactly random GAUC
+   (0.5000) — a direct measurement of this effect.
+4. **Ranking loss (listwise/BPR) — 7/7 matched comparisons closed this.** The objective IS better
+   (+0.0008 to +0.0033 against a pointwise control at identical batching), but grouped batching
+   costs −0.0023 to −0.0040 on its own. The gain never repays the machinery.
+5. **Multi-task auxiliary heads — 6/6 against their own control.** `is_click` correlates 0.760 with
+   `long_view` (near-duplicate task); score degrades monotonically with auxiliary weight.
+6. **LambdaRank / GBDT** — no user×item interaction available to axis-aligned splits; personalised
+   crosses are too sparse to generalise. FM beats trees because the signal lives in sparse embeddings.
 
-> The bottleneck is **not features and not capacity.** It is the **objective** and the **unused signals.**
+> The bottleneck is **not features, capacity, or loss objective.** It is **model family** (FFM
+> captures field-aware interactions FM cannot) and **ensemble diversity**.
 
-## Where the headroom is (our strategy, ranked by expected payoff)
+## What worked / open headroom
 
-1. **Change the loss → ranking objective.** Baseline trains pointwise logloss but is scored on ranking
-   metrics (GAUC/nDCG). Switch to **pairwise (BPR)** or **listwise (per-user softmax)**. Highest-value
-   single change, needs no new data. **Start here.**
-2. **User behavior sequences.** Each user has hundreds–thousands of train interactions, currently unused.
-   Interest modeling (DIN / SIM family).
-3. **Multi-objective learning.** Use `is_click`, `is_like`, `is_follow`, `is_comment`, `is_forward`,
-   `play_time_ms` as auxiliary tasks alongside the `long_view` main task.
-4. **Watch-time modeling.** Treat `play_time_ms` as censored regression (CWM-style one-sided loss).
-5. **Different model** (DeepFM / DCN / xDeepFM) — ranked below, since capacity is not the bottleneck.
-6. **Time features & drift** (`hourmin`, `date`, train↔test distribution shift).
-7. **Unbiased validation (advanced):** use `log_random_4_22_to_5_08_pure.csv` (randomly-exposed log) to
-   check overfitting to biased traffic.
+**Verified wins (beat 0.002 threshold, replicated):**
+- **FFM** (k=4): +0.0009 valid / +0.0019 test over FM, non-overlapping across 6 seeds each.
+- **Rank-averaged ensembles**: +0.0013–0.0014 on two disjoint seed halves.
+- **6×FM + 6×FFM ensemble**: valid 0.6045 / test 0.5976 (+0.0031 over baseline).
+
+**Open headroom (untried, ranked by potential):**
+1. **`video_features_statistic_pure.csv`** — 30+ continuous per-video engagement columns; the
+   organisers' ablation only tested categorical IDs. Compute from train split only (leak-free).
+2. **Within-session position from `time_ms`** — varies within a user, so unlike user-side
+   aggregates it can reorder impressions.
+3. **Censored watch-time (D2Q-style)** — duration is negatively predictive (below-random GAUC);
+   CWM/D2Q papers address this bias.
+4. **User behavior sequences** — ~42 events/user; DIN/SIM family.
+5. **Stacking** — FM/FFM scores as features for a second-stage tree model.
 
 ## Definition of done
 
-- [ ] Data downloaded; `--model random` reproduces primary ≈ 0.475 (harness verified).
-- [ ] FM baseline reproduced at primary ≈ 0.5946.
-- [ ] At least one headroom direction (starting with the ranking loss) implemented and measured on **valid**.
-- [ ] A model that beats **valid** primary of the FM baseline beyond the noise band (Δ > 0.002).
-- [ ] Valid submission CSV generated and passing `submit.py --check`.
-- [ ] Final test-set primary reported vs. the 0.5946 baseline and the 0.8645 oracle ceiling.
+- [x] Data downloaded; `--model random` reproduces primary ≈ 0.475 (harness verified).
+- [x] FM baseline reproduced at primary ≈ 0.5946.
+- [x] Headroom directions implemented and measured on **valid** (FFM, ensembles, ranking loss, multi-task, LambdaRank — all with controlled measurements).
+- [x] A model that beats **valid** primary of the FM baseline beyond the noise band (Δ > 0.002): **6×FM + 6×FFM ensemble, valid 0.6045 (+0.0029 over baseline)**.
+- [x] Valid submission CSV generated and passing `submit.py --check` (170,588 rows).
+- [x] Final test-set primary reported: **0.5976 vs 0.5946 baseline, vs 0.8645 oracle ceiling**.

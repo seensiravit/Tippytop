@@ -23,9 +23,9 @@ your model  →  scores (one float per eval row)  →  evaluate()  →  primary 
 
 ```bash
 # from the repo root
-pip install -e ".[dev]"                 # installs numpy, pytest; enables `python -m tippytop`
+uv sync                                 # or: pip install -e ".[dev]"
 
-# download the dataset into the vendored kit (~24 MB, no registration)
+# download the dataset (~46 MB, no registration)
 bash scripts/download_data.sh           # or:  powershell scripts/download_data.ps1
 ```
 

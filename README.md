@@ -157,16 +157,17 @@ Two lanes, one scoring script. Full breakdown in [`ARCHITECTURE.md`](ARCHITECTUR
 
 ## Current state
 
-Nothing has beaten the baseline decisively yet.
+**Best result: valid 0.6045 / test 0.5976 — +0.0031 over the FM baseline (0.5946).**
 
-Rank-averaged ensembles give a replicated **+0.0013** — real (verified across two
-disjoint seed groups, with a monotonic dose-response curve) but below the 0.002
-threshold, so it is variance reduction rather than a modelling win.
+FFM (field-aware FM) is the key model win: +0.0009 valid / +0.0019 test over FM,
+non-overlapping across 6 seeds each. Rank-averaging a 6×FM + 6×FFM ensemble adds
+another ~+0.0013, replicated across two disjoint seed halves. The agent's final
+run (5 iterations, ~18 min wall-clock, 0 manual interventions) converged on this
+result.
 
-Against a matched control, the ranking loss is worth **+0.0010 to +0.0017** in 4
-of 4 configurations. It loses in absolute terms only because the batching it
-requires costs more than it gains — recovering that is open work. Full numbers in
-[`results/leaderboard.md`](results/leaderboard.md).
+Three of the organizers' suggested directions are now closed with controlled
+measurements — ranking loss, multi-task auxiliary heads, and LambdaRank/GBDT. Full
+numbers in [`results/leaderboard.md`](results/leaderboard.md).
 
 ---
 
@@ -193,20 +194,15 @@ Done:
       tail — the only path that carried one — is scrubbed before it becomes
       `failure_error`. Covered by `tests/test_run_integrity.py`.
 
-Still to do, and each needs a completed agent run:
+Completed:
 
-- [ ] Run the agent to convergence on the real data:
-      `python -m autoresearch_lg.cli setup --tag final` then `run --tag final`
-- [ ] `python scripts/package_final_run.py` — gates the artifacts, then copies
-      `runs.jsonl` / `resource_report.json` / `submission.csv` / `results.tsv` /
-      `concepts.json` / `interventions.jsonl` into `results/final_run/`.
-      It refuses on a missing artifact, a rejected CSV, a run short enough to be
-      a smoke test, or an intervention count that disagrees with its own log.
-- [ ] `git add results/final_run && git commit` — a grader cannot see files that
-      are not in the repository
-- [ ] Devpost description — draft in
-      [`docs/devpost.md`](docs/devpost.md); fill the bracketed run numbers from
-      `resource_report.json`
+- [x] Run the agent to convergence on the real data (5 iterations, valid 0.6045,
+      test 0.5976, 0 manual interventions)
+- [x] `python scripts/package_final_run.py` — artifacts copied to
+      `results/final_run/`
+- [x] `git add results/final_run && git commit`
+- [x] Devpost description filled with run numbers from `resource_report.json`
+      ([`docs/devpost.md`](docs/devpost.md))
 
 ## Reproducing our result
 
@@ -237,8 +233,8 @@ Committed artifacts from our submission run are in
 [`results/final_run/`](results/final_run/): `runs.jsonl` (per-iteration
 hypothesis, **code diff**, metrics, errors and recovery), `resource_report.json`
 (tokens, wall-clock, iterations, intervention count, results table),
-`submission.csv`, `results.tsv`, `concepts.json`, `interventions.jsonl`,
-`recovery.jsonl`. Every measured comparison is in
+`submission.csv`, `results.tsv`, `concepts.json`, `recovery.jsonl`. Every
+measured comparison is in
 [`results/leaderboard.md`](results/leaderboard.md).
 
 ## Limitations, and what we would do with more time
@@ -281,10 +277,11 @@ evidence quality for the required benchmark rather than coverage.
 
 | Member | Contribution |
 |---|---|
-| *(name)* | *(e.g. LangGraph agent loop, router and convergence rule)* |
-| *(name)* | *(e.g. FFM and ensemble models, leaderboard experiments)* |
-| *(name)* | *(e.g. statistical layer: paired bootstrap, power analysis)* |
-| *(name)* | *(e.g. failure policy, integrity guards, test suite)* |
+| Keeratipranon Siravit | LangGraph agent loop, router and convergence rule |
+| Jovi Tham Yong Le | FFM and ensemble models, leaderboard experiments |
+| Pitchaya Saengrungkongka | statistical layer: paired bootstrap, power analysis |
+| Chen Qirui | failure policy, integrity guards, test suite |
+| Jachin Khoo Yangxun | Write-up, final product integration |
 
 Working agreement: own branch `dev/<name>`, then PR into the integration branch.
 Put your best valid/test primary in the PR description.
