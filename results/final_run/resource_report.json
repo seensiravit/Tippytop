@@ -1,14 +1,14 @@
 {
   "best_valid_primary": 0.6045,
   "best_test_primary": 0.5976,
-  "best_checkpoint_id": 5,
-  "best_exp_dir": "C:\\Users\\jachi\\Downloads\\Tippytop-repo\\runs\\exp_0005",
+  "best_checkpoint_id": 2,
+  "best_exp_dir": "C:\\Users\\jachi\\Downloads\\Tippytop-repo\\runs\\exp_0002",
   "iterations": 5,
-  "elapsed_seconds": 863.7,
-  "tokens_in_total": 31918,
-  "tokens_out_total": 14977,
+  "elapsed_seconds": 1084.6,
+  "tokens_in_total": 37379,
+  "tokens_out_total": 26104,
   "concepts_tried": 2,
-  "concepts_confirmed": 0,
+  "concepts_confirmed": 1,
   "baseline_metrics": {
     "valid": {
       "GAUC": 0.6674,
@@ -21,12 +21,22 @@
       "primary": 0.5946
     }
   },
-  "best_valid_metrics": {},
-  "best_test_metrics": {},
-  "test_delta_vs_baseline": {},
-  "score_dataset": null,
-  "results_note": "no experiment beat the baseline, or per-metric scores are absent from runs.jsonl (a run logged before per-metric capture was added)",
-  "stop_reason": "plateau (validation best moved +0.0018 over the last 3 completed iterations, at or below the 0.002 threshold)",
+  "best_valid_metrics": {
+    "GAUC": 0.6711,
+    "nDCG@5": 0.538,
+    "primary": 0.6045
+  },
+  "best_test_metrics": {
+    "GAUC": 0.6646,
+    "nDCG@5": 0.5307,
+    "primary": 0.5976
+  },
+  "test_delta_vs_baseline": {
+    "GAUC": 0.0036,
+    "nDCG@5": 0.0025
+  },
+  "score_dataset": 0.00305,
+  "stop_reason": "plateau (validation best moved +0.0000 over the last 3 completed iterations, at or below the 0.002 threshold)",
   "recovery_events": 2,
   "recovery_by_action": {
     "finalize-early": 1,

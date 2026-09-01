@@ -1,40 +1,40 @@
 [
   {
     "id": "c1",
-    "statement": "Field-Aware Factorization Machine (FFM)",
-    "rationale": "Giving each feature a separate embedding per interacting field (FFM, k=4) instead of one shared embedding per feature (FM, k=16) will improve within-user ranking, because interaction-specific structure (e.g. user_id's affinity toward videos vs toward authors) is more useful than raw embedding width, matching the verified 6-seed result of valid 0.6025 vs FM's 0.6016.",
+    "statement": "Field-aware FM (FFM) with position field",
+    "rationale": "Replacing plain FM with a Field-aware FM (separate embedding per interacting field pair, k=6) plus a within-user-day position feature derived from time_ms will beat the FM baseline (valid 0.6016) by more than the 0.002 noise threshold, reaching ~0.604 valid primary, because FFM lets user_id's embedding toward videos differ from its embedding toward authors/position, and position captures feed order bias that varies within a user's impression list.",
     "status": "closed",
-    "closed_reason": "pivoted (parity after 2 tunes)",
+    "closed_reason": "pivoted (parity after 1 tune(s))",
     "opened_at_iteration": 1,
     "attempts": [
       {
         "checkpoint_id": 2,
-        "valid_primary": 0.6027,
-        "outcome": "parity"
+        "valid_primary": 0.6045,
+        "outcome": "improved"
       },
       {
         "checkpoint_id": 3,
-        "valid_primary": 0.6034,
+        "valid_primary": 0.6044,
         "outcome": "parity"
       }
     ]
   },
   {
     "id": "c2",
-    "statement": "position-bias-aware ranking via time_ms ordering feature",
-    "rationale": "Adding a within-user-day impression-position feature (derived from time_ms, sorted per user per day) as an extra FFM field captures position/serving bias that varies within a user's impression list, improving valid primary beyond 0.6034. This is a genuinely new signal (not more static item/user IDs, not architecture, not loss) \u2014 it was flagged as untried and distinct from the closed static-feature and GBDT directions since it's positional/temporal rather than categorical-ID redundant.",
+    "statement": "train-only per-video engagement aggregates",
+    "rationale": "Continuous train-only item-side engagement features (smoothed long_view rate, impression count, mean duration-normalized watch proxy) computed strictly from the train split and added as extra numeric fields to the FFM will improve within-user ranking beyond FFM+position (valid 0.6045), because these vary within a user's impression list (item-side) and were never tested continuously before (prior 'static features' ablation only tried redundant categorical video IDs, not continuous rates). This is a genuinely new angle: encoding continuous train-only aggregates as bucketed categorical fields inside the existing FFM, not a GBDT (which failed due to axis-aligned splits on sparse user-item interactions, not due to the feature itself).",
     "status": "active",
     "closed_reason": "",
     "opened_at_iteration": 3,
     "attempts": [
       {
         "checkpoint_id": 4,
-        "valid_primary": 0.6044,
+        "valid_primary": 0.6038,
         "outcome": "parity"
       },
       {
         "checkpoint_id": 5,
-        "valid_primary": 0.6045,
+        "valid_primary": 0.6044,
         "outcome": "parity"
       }
     ]
