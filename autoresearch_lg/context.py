@@ -161,11 +161,11 @@ Dataset-derived edges (judge-checkable, not in any shared README):
   within-user order is scored anyway. Replicated at +0.0013 on two disjoint
   seed groups, and mixing families (FM + FFM) beats more members of one family,
   because members of a family share a bias.
-  BUDGET IT: the harness kills a run at 10 minutes. encode() once and reuse it,
-  then each fit costs ~60-90s, so 4-6 members is the safe range. Do not fit
-  more than 6 -- a timeout scores nothing at all, and the gain from 6 to 12
-  members is inside the noise band anyway.
-
+  BUDGET IT: the harness kills a run at 10 minutes and FFM with the position
+  field costs 140-190s per fit, so only TWO members fit with any margin.
+  encode() ONCE and reuse it across both. Two members captures roughly half the
+  replicated +0.0013 -- a timeout captures none of it.
+  
 Measured, and it changes how you must READ a ranking-loss result:
 - A listwise/pairwise loss needs a user's rows in one batch. That BATCHING alone
   costs about -0.0023 valid primary, measured with the objective held fixed at
