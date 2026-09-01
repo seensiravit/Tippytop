@@ -141,8 +141,18 @@ HEADROOM = [
 DATASET_EDGES = """\
 Dataset-derived edges (judge-checkable, not in any shared README):
 - 36.3% of users are inert: 27.1% all-negative (nDCG pinned to 0, unsalvageable),
-  9.2% all-positive (nDCG pinned to 1). Consider upweighting movable users in
-  the TRAINING loss only — never touch how eval scores them, that's fixed.
+  9.2% all-positive (nDCG pinned to 1).
+- The TRAINING loss and the SCORED metric weight users differently, and nobody
+  has closed that gap. Pointwise logloss over rows gives a 40-impression user
+  40x the gradient of a 3-impression user. But nDCG@5 is a plain mean over
+  users -- every user counts ONCE -- and GAUC weights user u by npos_u while
+  excluding all-negative and all-positive users entirely. So a quarter of the
+  training signal comes from users who cannot move the score at all.
+  Two cheap experiments, neither ever run here: weight each training row by
+  1/n_u (matches nDCG's per-user mean), or by npos_u/n_u (matches GAUC's own
+  weighting). A weight vector in the loss, nothing structural. If it works it
+  compounds with FFM rather than competing with it.
+  Never change how EVAL weights anything -- evaluate.py is fixed.
 - Eval lists are short (~7 impressions/user) — listwise objectives are cheap here.
 - Rank-averaging inside run_fm is the largest gain currently available, and it
   is not being taken. Fit N models with different seeds, convert each one's
@@ -193,7 +203,23 @@ these without a genuinely new angle, and say what the angle is:
   sparse user x item interaction: embeddings generalise over it, axis-aligned
   splits cannot. Closed as a standalone model; still viable as a diverse
   ensemble member or via stacking on an FM score.
-
+- Field-aware FM (FFM), k=4-6, row-shuffled, Adam: SETTLED at valid 0.6031
+- Field-aware FM (FFM), k=4-6, row-shuffled, Adam: SETTLED at valid 0.6027-0.6034
+  across seven independent agent runs. Best known config: k=6, lr=0.0015,
+  l2=5e-6, patience=5. It is the best single model here and the right base to
+  build ON, but tuning it is exhausted -- k in {3,4,6,8}, lr in
+  {0.0007..0.0015}, l2, patience and step-decay were all swept and every
+  variant landed within 0.0007 of each other. Do NOT spend iterations
+  re-tuning FFM. Start from that config and add something new to it.
+- Within-session position from time_ms: CONFIRMED, worth about +0.0010 on top
+  of FFM. Add a position field to FIELDS -- the within-user-day rank by time_ms,
+  either as a decile of list length or as a capped absolute rank 0..9 (both
+  scored 0.6044-0.6045 with FFM k=6). This is already in the incumbent; do not
+  re-derive it, build on it.
+- The incumbent to beat is therefore FFM(k=6, lr=0.0015, l2=5e-6) + position
+  field, at valid 0.6045. The single largest gain still uncollected is
+  rank-averaging several such models inside run_fm.
+  
 Still untried: user history sequences (~42 events/user, temper expectations),
 and unbiased evaluation against log_random_4_22_to_5_08_pure.csv (1.18M
 randomly-exposed rows — one extra evaluation pass, no new modelling)."""

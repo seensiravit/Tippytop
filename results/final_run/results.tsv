@@ -1,0 +1,6 @@
+commit	valid_primary	test_primary	wall_seconds	status	description
+1	0.601500	0.595300	91.4	keep	baseline (FM, k=16)
+2	0.602700	0.596400	136.2	parity	Replace FM with FFM: per-field-pair embeddings, k=4, same training loop/Adam optimizer/early stopping as baseline FM, reachable from run_fm via --model fm (default architecture switched to FFM logic inside run_fm).
+3	0.603400	0.597100	176.5	parity	tuning FFM further after an improvement: k=6, lr=0.0015, l2=5e-6, patience=5
+4	0.604400	0.597700	189.7	parity	Add position_bucket field (decile of within user-day rank by time_ms) to FIELDS, keep FFM k=6/lr=0.0015/l2=5e-6 exactly as checkpoint #3, single seed run to test signal.
+5	0.604500	0.597600	138.6	parity	position feature = capped absolute within-user-day rank (0..9, capped at 9) instead of fraction-of-length decile; same FFM k=6/lr=0.0015/l2=5e-6/patience=5
