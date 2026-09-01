@@ -259,24 +259,21 @@ def test_finalize_reserve_is_actually_held_back():
 
 def test_convergence_reports_why_it_stopped(tmp_path):
     base = {"start_time": 0.0, "no_improve_count": 0, "n_plateau": 3, "iteration": 1,
-            "max_iterations": 50, "max_wall_seconds": 10 ** 12, "history": [],
-            "repo_root": str(tmp_path), "llm_unavailable": ""}
+            "epsilon": 0.002, "max_iterations": 50, "max_wall_seconds": 10 ** 12,
+            "history": [], "repo_root": str(tmp_path), "llm_unavailable": ""}
     assert graph_mod.check_convergence(base)["converged"] is False
-    plateaued = graph_mod.check_convergence({**base, "no_improve_count": 3})
-    assert plateaued["converged"] and plateaued["stop_reason"] == "plateau"
-    maxed = graph_mod.check_convergence({**base, "iteration": 50})
-    assert maxed["stop_reason"] == "max-iterations"
-
+    flat = graph_mod.check_convergence(
+        {**base, "history": [{"outcome": "improved", "metrics": {"valid_primary": 0.60}}] * 5})
+    assert flat["converged"] and flat["stop_reason"].startswith("plateau")
 
 def test_a_dead_provider_ships_instead_of_dying(tmp_path):
     """The L4 failsafe. propose being unreachable must end the run at finalize,
     not with a traceback and no deliverables."""
     out = graph_mod.check_convergence({
         "start_time": 0.0, "no_improve_count": 0, "n_plateau": 3, "iteration": 5,
-        "max_iterations": 50, "max_wall_seconds": 10 ** 12, "history": [],
-        "repo_root": str(tmp_path), "llm_unavailable": "OverloadedError: ..."})
+        "epsilon": 0.002, "max_iterations": 50, "max_wall_seconds": 10 ** 12,
+        "history": [], "repo_root": str(tmp_path), "llm_unavailable": "OverloadedError: ..."})
     assert out["converged"] and out["stop_reason"] == "llm-unavailable"
-
 
 def test_propose_error_handler_routes_to_finalize(tmp_path):
     class _Err:

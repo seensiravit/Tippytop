@@ -141,11 +141,31 @@ HEADROOM = [
 DATASET_EDGES = """\
 Dataset-derived edges (judge-checkable, not in any shared README):
 - 36.3% of users are inert: 27.1% all-negative (nDCG pinned to 0, unsalvageable),
-  9.2% all-positive (nDCG pinned to 1). Consider upweighting movable users in
-  the TRAINING loss only — never touch how eval scores them, that's fixed.
+  9.2% all-positive (nDCG pinned to 1).
+- The TRAINING loss and the SCORED metric weight users differently, and nobody
+  has closed that gap. Pointwise logloss over rows gives a 40-impression user
+  40x the gradient of a 3-impression user. But nDCG@5 is a plain mean over
+  users -- every user counts ONCE -- and GAUC weights user u by npos_u while
+  excluding all-negative and all-positive users entirely. So a quarter of the
+  training signal comes from users who cannot move the score at all.
+  Two cheap experiments, neither ever run here: weight each training row by
+  1/n_u (matches nDCG's per-user mean), or by npos_u/n_u (matches GAUC's own
+  weighting). A weight vector in the loss, nothing structural. If it works it
+  compounds with FFM rather than competing with it.
+  Never change how EVAL weights anything -- evaluate.py is fixed.
 - Eval lists are short (~7 impressions/user) — listwise objectives are cheap here.
-- Seed averaging on the final submission is cheap variance insurance.
-
+- Rank-averaging inside run_fm is the largest gain currently available, and it
+  is not being taken. Fit N models with different seeds, convert each one's
+  scores to WITHIN-USER ranks, average the ranks, return that. Ranks not raw
+  scores: differently-trained models are on different scales, and only
+  within-user order is scored anyway. Replicated at +0.0013 on two disjoint
+  seed groups, and mixing families (FM + FFM) beats more members of one family,
+  because members of a family share a bias.
+  BUDGET IT: the harness kills a run at 10 minutes and a single fit costs
+  60-200s depending on the model, so budget members against your own measured
+  epoch time and keep total training well under the cap. encode() ONCE and
+  reuse it across members -- a timeout scores nothing at all.
+  
 Measured, and it changes how you must READ a ranking-loss result:
 - A listwise/pairwise loss needs a user's rows in one batch. That BATCHING alone
   costs about -0.0023 valid primary, measured with the objective held fixed at
@@ -183,7 +203,7 @@ these without a genuinely new angle, and say what the angle is:
   sparse user x item interaction: embeddings generalise over it, axis-aligned
   splits cannot. Closed as a standalone model; still viable as a diverse
   ensemble member or via stacking on an FM score.
-
+  
 Still untried: user history sequences (~42 events/user, temper expectations),
 and unbiased evaluation against log_random_4_22_to_5_08_pure.csv (1.18M
 randomly-exposed rows — one extra evaluation pass, no new modelling)."""

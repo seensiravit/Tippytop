@@ -1,0 +1,50 @@
+{
+  "best_valid_primary": 0.6045,
+  "best_test_primary": 0.5976,
+  "best_checkpoint_id": 2,
+  "best_exp_dir": "C:\\Users\\jachi\\Downloads\\Tippytop-repo\\runs\\exp_0002",
+  "iterations": 5,
+  "elapsed_seconds": 1084.6,
+  "tokens_in_total": 37379,
+  "tokens_out_total": 26104,
+  "concepts_tried": 2,
+  "concepts_confirmed": 1,
+  "baseline_metrics": {
+    "valid": {
+      "GAUC": 0.6674,
+      "nDCG@5": 0.5357,
+      "primary": 0.6016
+    },
+    "test": {
+      "GAUC": 0.661,
+      "nDCG@5": 0.5282,
+      "primary": 0.5946
+    }
+  },
+  "best_valid_metrics": {
+    "GAUC": 0.6711,
+    "nDCG@5": 0.538,
+    "primary": 0.6045
+  },
+  "best_test_metrics": {
+    "GAUC": 0.6646,
+    "nDCG@5": 0.5307,
+    "primary": 0.5976
+  },
+  "test_delta_vs_baseline": {
+    "GAUC": 0.0036,
+    "nDCG@5": 0.0025
+  },
+  "score_dataset": 0.00305,
+  "stop_reason": "plateau (validation best moved +0.0000 over the last 3 completed iterations, at or below the 0.002 threshold)",
+  "recovery_events": 2,
+  "recovery_by_action": {
+    "finalize-early": 1,
+    "repair": 1
+  },
+  "manual_interventions": 0,
+  "intervention_summary": "0 (no human involvement recorded during this run)",
+  "interventions": [],
+  "submission": "C:\\Users\\jachi\\Downloads\\Tippytop-repo\\submission.csv",
+  "submission_note": "\u00e2\u0153\u201c format and alignment check passed: 170,588 rows, split=test"
+}

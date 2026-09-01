@@ -1,5 +1,12 @@
 # autoresearch — KuaiRand-Pure
 
+> **Historical document.** This describes the *original* agent design (direct
+> edits to `baseline.py`, `git reset --hard` to discard, numpy-only, no
+> LangGraph). The current agent lives in `autoresearch_lg/` — a LangGraph graph
+> (`propose → experiment → critic → router`) with full failure-policy layers, SQLite
+> checkpoints, and Claude API calls. See `ARCHITECTURE.md` for the current design.
+> This file is kept for audit purposes only.
+
 This is an experiment to have an LLM agent do its own recommendation-modeling
 research, autonomously, overnight. It adapts the loop from
 [autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx)

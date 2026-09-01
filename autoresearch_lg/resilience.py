@@ -248,6 +248,38 @@ def budget_allows_another_experiment(elapsed: float, max_wall_seconds: float,
                        f"finalize needs {needed / 60:.1f} min")
     return True, ""
 
+def plateaued(history: list, n_plateau: int, epsilon: float) -> tuple[bool, str]:
+    """The brief's convergence rule, read literally.
+
+        "A run is considered converged when validation score has not improved
+         by more than eps = 0.002 over the last N = 3 consecutive iterations"
+
+    That is a **window** test on the best-so-far curve, not a per-iteration one.
+    The difference is not academic on this benchmark, where the largest honest
+    single-step gain anyone has measured is about +0.001:
+
+        old (per-iteration): every step under +0.002 is "no improvement", so
+            three consecutive +0.001 steps -- a cumulative +0.003, comfortably
+            past the threshold -- converge the run and stop it at iteration 4,
+            having spent six minutes of a six-hour budget.
+        new (windowed): the same three steps are +0.003 over the window, so the
+            run correctly keeps going while it is still making progress.
+
+    A genuinely stuck run still stops, which is the point of the rule. This only
+    stops the agent quitting while it is winning.
+    """
+    completed = [h for h in history if h.get("outcome") != "error"]
+    if len(completed) <= n_plateau:
+        return False, ""
+    best_curve, best = [], float("-inf")
+    for h in completed:
+        best = max(best, h.get("metrics", {}).get("valid_primary", 0.0))
+        best_curve.append(best)
+    gain = best_curve[-1] - best_curve[-1 - n_plateau]
+    if gain > epsilon:
+        return False, ""
+    return True, (f"validation best moved {gain:+.4f} over the last {n_plateau} "
+                  f"completed iterations, at or below the {epsilon} threshold")
 
 # ------------------------------------------------------- recovery log -----
 @dataclass

@@ -1,0 +1,6 @@
+commit	valid_primary	test_primary	wall_seconds	status	description
+1	0.601500	0.595300	82.7	keep	baseline (FM, k=16)
+2	0.604500	0.597600	143.2	keep	FFM k=6, lr=0.0015, l2=5e-6, patience=5, row-shuffled batches, with an added 'position' categorical field (capped rank 0..9 of within-user-day order by time_ms), replacing the plain FM in run_fm's --model fm path.
+3	0.604400	0.597700	230.8	parity	FFM k=6, lr=0.0015, l2=5e-6, patience=5, position field changed from capped absolute rank (0..9) to within-user-day relative decile (rank/count*10, capped 0..9) so position is comparable across train's longer lists and valid's much shorter lists.
+4	0.603800	0.597000	260.4	parity	FFM k=6 + position field + 2 new bucketed fields (video_lv_rate_bucket, video_impcount_bucket) computed from train-only smoothed per-video long_view rate and log impression count, added to FIELDS/encode, same hyperparams as incumbent (lr=0.0015, l2=5e-6, patience=5)
+5	0.604400	0.597600	168.9	parity	FFM k=6 + position field + continuous smoothed train-only video long_view-rate injected as a scalar linear term (own learned weight) rather than a bucketed categorical field, lr=0.0015, l2=5e-6, patience=5

@@ -115,15 +115,7 @@ batch size, so the optimum may sit below your tested range rather than above it.
 
 ## Unit tests (no data needed)
 
-    python -m pytest tests/ -q          # 139 passed, 1 skipped
-
-## A caveat on what has and hasn't been checked
-
-Every timing and behaviour claim in `CHANGES.md` was measured at real scale, but
-against **synthetic** data matched to KuaiRand-Pure's structure — the real file
-was unreachable from the environment this was built in. So the *machinery* is
-verified; none of the *modelling* results are. Step 2 above is the first thing
-that tells you the harness agrees with the organizers on real data.
+    python -m pytest tests/ -q          # 201 tests
 
 ---
 

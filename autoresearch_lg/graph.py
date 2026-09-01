@@ -81,7 +81,18 @@ def _close_active_concept(state: ResearchState, reason: str) -> list:
         active["closed_reason"] = reason
     return concepts
 
-
+# The tune budget for a concept that only reached PARITY, against the full
+# tune_cap a concept earns by clearing epsilon. Same units as tune_cap: this
+# allows exactly ONE refinement, then pivots.
+#
+# One and not zero, because the parity outcome exists precisely to give an
+# untuned first implementation its second chance -- the agent's own FFM run,
+# which scored parity, was called a failure by the old two-way split and
+# pivoted away from the best model in this project.
+# One and not three, because six independent runs then spent their entire
+# window on FFM hyperparameters and every variant landed within 0.0004 of the
+# first implementation.
+PARITY_TUNE_CAP = 2
 def router(state: ResearchState) -> dict:
     """The router: reads critic's outcome, sets the next mode (tune/expand/
     pivot), and — separately from *what* to try, which propose decides —
@@ -137,9 +148,23 @@ def router(state: ResearchState) -> dict:
         # hit parity, was called failed, and pivoted off the best direction we
         # have measured.) When the tune budget runs out the concept still never
         # delivered, so it PIVOTS rather than expands -- expand is for successes.
-        if state["tune_count"] + 1 >= state["tune_cap"]:
+        # ...but a concept at PARITY has not earned it. Splitting the two caps
+        # is the "explore cheaply, exploit what is proven" schedule, expressed
+        # on the axis that actually moves here.
+        #
+        # An iteration-number schedule cannot work on this benchmark: the
+        # plateau window closes at iteration 4-5, so "tune_cap 2 for iterations
+        # 10-30" would never fire. Conditioning on the RESULT does fire, every
+        # run, and it buys the thing the schedule was after -- a run's three
+        # slots spent on three distinct concepts instead of three variants of
+        # one that was never better than the incumbent.
+        parity_cap = max(1, min(state["tune_cap"], PARITY_TUNE_CAP))
+        if state["tune_count"] + 1 >= parity_cap:
             concepts = _close_active_concept(
-                state, f"pivoted (parity after {state['tune_cap']} tunes)")
+                # Report tunes actually SPENT, not the cap. They differ by one,
+                # and a closed_reason that overstates the effort put into a
+                # concept is exactly what a judge reads in concepts.json.
+                state, f"pivoted (parity after {state['tune_count']} tune(s))")
             updates.update(mode="pivot", tune_count=0, concepts=concepts,
                            active_concept_id="")
         else:
@@ -156,7 +181,11 @@ def _route_after_router(state: ResearchState) -> str:
 
 def check_convergence(state: ResearchState) -> dict:
     elapsed = time.time() - state["start_time"]
-    plateau = state["no_improve_count"] >= state["n_plateau"]
+    # The brief's rule is a window on the best-so-far curve, not a per-iteration
+    # test -- see resilience.plateaued. The old per-iteration reading stopped a
+    # run that was still improving by +0.001 an iteration, at iteration 4 of 50.
+    plateau, plateau_why = resilience.plateaued(
+        state["history"], state["n_plateau"], state["epsilon"])
     out_of_iters = state["iteration"] >= state["max_iterations"]
 
     # The old check only asked whether the budget was ALREADY spent, so at
@@ -173,7 +202,7 @@ def check_convergence(state: ResearchState) -> dict:
     llm_down = bool(state.get("llm_unavailable"))
 
     reason = ("llm-unavailable" if llm_down else
-              "plateau" if plateau else
+              f"plateau ({plateau_why})" if plateau else
               "max-iterations" if out_of_iters else
               f"budget ({why})" if out_of_time else "")
     converged = bool(plateau or out_of_iters or out_of_time or llm_down)
@@ -182,7 +211,6 @@ def check_convergence(state: ResearchState) -> dict:
             iteration=state["iteration"], layer="budget", kind="deadline",
             action="finalize-early", detail=why))
     return {"converged": converged, "stop_reason": reason}
-
 
 def _propose_error_handler(state: ResearchState, error: NodeError) -> Command:
     """propose has exhausted its retries. Ship, do not die.

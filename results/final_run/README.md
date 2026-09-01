@@ -4,7 +4,9 @@
 agent writes is scratch — `setup` archives the previous run's copies on every
 new tag — but these files are graded deliverables and must be committed.
 
-Empty until the submission run is chosen. Do not fill it with smoke-test output.
+**Populated with the submission run** (5 iterations, valid 0.6045, test 0.5976,
+0 manual interventions, converged by plateau rule). See `resource_report.json`
+for full resource usage.
 
 ## What goes here
 
