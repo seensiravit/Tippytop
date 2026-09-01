@@ -161,10 +161,10 @@ Dataset-derived edges (judge-checkable, not in any shared README):
   within-user order is scored anyway. Replicated at +0.0013 on two disjoint
   seed groups, and mixing families (FM + FFM) beats more members of one family,
   because members of a family share a bias.
-  BUDGET IT: the harness kills a run at 10 minutes and FFM with the position
-  field costs 140-190s per fit, so only TWO members fit with any margin.
-  encode() ONCE and reuse it across both. Two members captures roughly half the
-  replicated +0.0013 -- a timeout captures none of it.
+  BUDGET IT: the harness kills a run at 10 minutes and a single fit costs
+  60-200s depending on the model, so budget members against your own measured
+  epoch time and keep total training well under the cap. encode() ONCE and
+  reuse it across members -- a timeout scores nothing at all.
   
 Measured, and it changes how you must READ a ranking-loss result:
 - A listwise/pairwise loss needs a user's rows in one batch. That BATCHING alone
@@ -203,22 +203,6 @@ these without a genuinely new angle, and say what the angle is:
   sparse user x item interaction: embeddings generalise over it, axis-aligned
   splits cannot. Closed as a standalone model; still viable as a diverse
   ensemble member or via stacking on an FM score.
-- Field-aware FM (FFM), k=4-6, row-shuffled, Adam: SETTLED at valid 0.6031
-- Field-aware FM (FFM), k=4-6, row-shuffled, Adam: SETTLED at valid 0.6027-0.6034
-  across seven independent agent runs. Best known config: k=6, lr=0.0015,
-  l2=5e-6, patience=5. It is the best single model here and the right base to
-  build ON, but tuning it is exhausted -- k in {3,4,6,8}, lr in
-  {0.0007..0.0015}, l2, patience and step-decay were all swept and every
-  variant landed within 0.0007 of each other. Do NOT spend iterations
-  re-tuning FFM. Start from that config and add something new to it.
-- Within-session position from time_ms: CONFIRMED, worth about +0.0010 on top
-  of FFM. Add a position field to FIELDS -- the within-user-day rank by time_ms,
-  either as a decile of list length or as a capped absolute rank 0..9 (both
-  scored 0.6044-0.6045 with FFM k=6). This is already in the incumbent; do not
-  re-derive it, build on it.
-- The incumbent to beat is therefore FFM(k=6, lr=0.0015, l2=5e-6) + position
-  field, at valid 0.6045. The single largest gain still uncollected is
-  rank-averaging several such models inside run_fm.
   
 Still untried: user history sequences (~42 events/user, temper expectations),
 and unbiased evaluation against log_random_4_22_to_5_08_pure.csv (1.18M
